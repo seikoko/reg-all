@@ -156,9 +156,12 @@ graph gen_graph(reg count, std::vector<instr> const &v)
 			break;
 		}
 	}
+	for (reg r = 0; r < count; ++r) {
+		assert(live[r].second != 0);
+	}
 	for (reg t = 1; t < count; ++t) {
 		for (reg s = 0; s < t; ++s) {
-			bool overlap = live[s].first <= live[t].second && live[t].first <= live[s].second;
+			bool overlap = live[s].first < live[t].second && live[t].first < live[s].second;
 			if (overlap) {
 				g.link(s, t);
 			}
