@@ -3,7 +3,7 @@
 #include <cassert>
 #include <cstring>
 #include <deque>
-#include <iterator>
+#include <climits>
 #include <vector>
 #include <cstdint>
 
@@ -267,6 +267,16 @@ reg some_bit_index(reg r)
 	return ctz(lsb(r));
 }
 
+reg bit(reg r)
+{
+	return reg{1} << (r % (CHAR_BIT * sizeof r));
+}
+
+reg bits(reg r)
+{
+	return bit(r) - 1;
+}
+
 stack<reg> strip(graph &g, reg n_reg, reg v_reg)
 {
 	stack<reg> stk;
@@ -297,23 +307,31 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> const &v)
 	stack<reg> stk = strip(g, n_reg, v_reg);
 
 	std::cout << g;
-
 	for (reg r = 0; r < v_reg; ++r) {
 		if (!g.removed[r]) {
 			mapping[r].status = color::potential_spill;
 			mapping[r].address = r;
+			g.remove(r);
+			stk.push(r);
 		}
 	}
 
 	while (!stk.empty()) {
 		const auto s = stk.pop();
+		// represents a mask of neighboring registers in use
 		reg used = 0;
 		for (const auto t : g.ladj[s]) {
 			if (mapping[t].status == color::phys_reg)
 				used |= reg{1} << mapping[t].address;
 		}
-		mapping[s].status  = color::phys_reg;
-		mapping[s].address = some_bit_index(~used);
+		// equivalent of bitwise NOT when you only consider the n_reg first bits
+		const reg free = bits(n_reg) ^ used;
+		if (free) {
+			mapping[s].status  = color::phys_reg;
+			mapping[s].address = some_bit_index(free);
+		} else {
+			mapping[s].status = color::actual_spill;
+		}
 	}
 
 	return mapping;
