@@ -94,7 +94,6 @@ struct graph
 
 	void link(reg s, reg t);
 	void remove(reg s);
-	void revive(reg s);
 };
 
 graph::graph(reg count)
@@ -116,14 +115,6 @@ void graph::remove(reg s)
 	removed.set(s);
 	for (const auto t : ladj[s]) {
 		degree[t]--;
-	}
-}
-
-void graph::revive(reg s)
-{
-	removed.unset(s);
-	for (const auto t : ladj[s]) {
-		degree[t]++;
 	}
 }
 
@@ -180,8 +171,8 @@ template <typename T>
 std::ostream &operator<<(std::ostream &os, std::vector<T> const &v)
 {
 	os << "{\n";
-	for (const auto &elem : v) {
-		os << elem << '\n';
+	for (size_t i = 0; i < v.size(); ++i) {
+		os << i << ": " << v[i] << '\n';
 	}
 	os << "}\n";
 	return os;
@@ -268,16 +259,14 @@ reg ctz(reg r)
 	return __builtin_ctz(r);
 }
 
-void gcolor(reg count, std::vector<instr> const &v)
+stack<reg> strip(graph g, reg n_reg, reg v_reg)
 {
-	const reg n_reg = 6;
-	auto g = gen_graph(count, v);
 	stack<reg> stk;
 	for (reg best, best_reg;;) {
 		// find min
 		best = n_reg;
-		best_reg = count + 1;
-		for (reg r = 0; r < count; ++r) {
+		best_reg = v_reg + 1;
+		for (reg r = 0; r < v_reg; ++r) {
 			if (g.removed[r])
 				continue;
 			if (g.degree[r] < best) {
@@ -286,19 +275,26 @@ void gcolor(reg count, std::vector<instr> const &v)
 			}
 		}
 
-		if (best_reg == count + 1) break;
+		if (best_reg == v_reg + 1) break;
 		stk.push(best_reg);
 		g.remove(best_reg);
 	}
+	return stk;
+}
 
-	std::cout << g;
+void gcolor(reg count, std::vector<instr> const &v)
+{
+	const reg n_reg = 6;
+	auto g = gen_graph(count, v);
+	stack<reg> stk = strip(g, n_reg, count);
 
 	std::vector<color> mapping(count);
+	bitset seen(count);
 	while (!stk.empty()) {
 		const auto s = stk.pop();
 		reg used = 0;
 		for (const auto t : g.ladj[s]) {
-			if (g.removed[t])
+			if (!seen[t])
 				continue;
 			if (mapping[t].status == color::phys_reg)
 				used |= reg{1} << mapping[t].address;
@@ -306,7 +302,7 @@ void gcolor(reg count, std::vector<instr> const &v)
 		reg bit_free = lsb(~used);
 		mapping[s].status = color::phys_reg;
 		mapping[s].address = ctz(bit_free);
-		g.revive(s);
+		seen.set(s);
 	}
 
 	std::cout << mapping;
