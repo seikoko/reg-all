@@ -94,6 +94,7 @@ struct graph
 
 	void link(reg s, reg t);
 	void remove(reg s);
+	bool has(reg s) const;
 };
 
 graph::graph(reg count)
@@ -116,6 +117,11 @@ void graph::remove(reg s)
 	for (const auto t : ladj[s]) {
 		degree[t]--;
 	}
+}
+
+bool graph::has(reg s) const
+{
+	return !removed[s];
 }
 
 graph gen_graph(reg count, std::vector<instr> const &v)
@@ -214,8 +220,8 @@ std::ostream &operator<<(std::ostream &os, graph const &g)
 	for (reg r = 0; r < g.ladj.size(); ++r) {
 		os << r << "(" << g.degree[r] << "): ";
 		bool first = true;
-		if (!g.removed[r]) for (auto t : g.ladj[r]) {
-			if (g.removed[t])
+		if (g.has(r)) for (auto t : g.ladj[r]) {
+			if (!g.has(t))
 				continue;
 			if (first) {
 				first = false;
@@ -285,7 +291,7 @@ stack<reg> strip(graph &g, reg n_reg, reg v_reg)
 		best = n_reg;
 		best_reg = v_reg + 1;
 		for (reg r = 0; r < v_reg; ++r) {
-			if (g.removed[r])
+			if (!g.has(r))
 				continue;
 			if (g.degree[r] < best) {
 				best = g.degree[r];
@@ -295,6 +301,7 @@ stack<reg> strip(graph &g, reg n_reg, reg v_reg)
 
 		if (best_reg == v_reg + 1) break;
 		stk.push(best_reg);
+		// TODO: potential optimization : just set g.degree[r] = v_reg+1 so removed nodes are never selected
 		g.remove(best_reg);
 	}
 	return stk;
@@ -306,9 +313,8 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> const &v)
 	std::vector<color> mapping(v_reg);
 	stack<reg> stk = strip(g, n_reg, v_reg);
 
-	std::cout << g;
 	for (reg r = 0; r < v_reg; ++r) {
-		if (!g.removed[r]) {
+		if (g.has(r)) {
 			mapping[r].status = color::potential_spill;
 			mapping[r].address = r;
 			g.remove(r);
