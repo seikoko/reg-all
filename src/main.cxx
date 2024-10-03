@@ -15,7 +15,7 @@ struct color
 	reg address;
 };
 
-std::ostream &operator<<(std::ostream &os, color c) { return os << "VPSR"[c.status] << std::hex << c.address; }
+std::ostream &operator<<(std::ostream &os, color c) { return os << "vpsr"[c.status] << std::hex << c.address; }
 
 struct instr
 {
@@ -262,7 +262,12 @@ reg ctz(reg r)
 	return __builtin_ctz(r);
 }
 
-stack<reg> strip(graph g, reg n_reg, reg v_reg)
+reg some_bit_index(reg r)
+{
+	return ctz(lsb(r));
+}
+
+stack<reg> strip(graph &g, reg n_reg, reg v_reg)
 {
 	stack<reg> stk;
 	for (reg best, best_reg;;) {
@@ -285,30 +290,33 @@ stack<reg> strip(graph g, reg n_reg, reg v_reg)
 	return stk;
 }
 
-void gcolor(reg count, std::vector<instr> const &v)
+std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> const &v)
 {
-	const reg n_reg = 6;
-	auto g = gen_graph(count, v);
-	stack<reg> stk = strip(g, n_reg, count);
+	auto g = gen_graph(v_reg, v);
+	std::vector<color> mapping(v_reg);
+	stack<reg> stk = strip(g, n_reg, v_reg);
 
-	std::vector<color> mapping(count);
-	bitset seen(count);
+	std::cout << g;
+
+	for (reg r = 0; r < v_reg; ++r) {
+		if (!g.removed[r]) {
+			mapping[r].status = color::potential_spill;
+			mapping[r].address = r;
+		}
+	}
+
 	while (!stk.empty()) {
 		const auto s = stk.pop();
 		reg used = 0;
 		for (const auto t : g.ladj[s]) {
-			if (!seen[t])
-				continue;
 			if (mapping[t].status == color::phys_reg)
 				used |= reg{1} << mapping[t].address;
 		}
-		reg bit_free = lsb(~used);
-		mapping[s].status = color::phys_reg;
-		mapping[s].address = ctz(bit_free);
-		seen.set(s);
+		mapping[s].status  = color::phys_reg;
+		mapping[s].address = some_bit_index(~used);
 	}
 
-	std::cout << mapping;
+	return mapping;
 }
 
 int main()
@@ -333,7 +341,8 @@ int main()
 	std::cout << v;
 	auto g = gen_graph(10, v);
 	std::cout << g;
-	gcolor(10, v);
+	auto m = gcolor(4, 10, v);
+	std::cout << m;
 	return 0;
 }
 
