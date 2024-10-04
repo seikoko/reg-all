@@ -149,6 +149,7 @@ graph gen_graph(reg count, std::vector<instr> const &v)
 		case instr::def:
 		case instr::imm:
 		case instr::load_local:
+			use(ins.rd, i);
 			def(ins.rd, i);
 			break;
 		case instr::store:
@@ -319,7 +320,6 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		for (reg r = 0; r < v_reg; ++r) {
 			if (interference.has(r)) {
 				mapping[r].status = color::potential_spill;
-				mapping[r].address = r;
 				interference.remove(r);
 				stk.push(r);
 			}
