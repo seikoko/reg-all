@@ -25,10 +25,10 @@ struct instr
 		copy,  // rd <- rs1
 		load,  // rd <- [rs1]
 		store, // rd -> [rs1]
-		load_local,  // rd <- locals[rs1]
-		store_local, // rd -> locals[rs1]
+		load_local,  // rd <- local_#rs1
+		store_local, // rd -> local_#rs1
 		add,   // rd <- rs1 + rs2
-		imm,   // rd <- value(rs1)
+		imm,   // rd <- #rs1
 	} opcode;
 	reg rd ;
 	reg rs1;
@@ -149,6 +149,7 @@ graph gen_graph(reg count, std::vector<instr> const &v)
 		case instr::def:
 		case instr::imm:
 		case instr::load_local:
+			use(ins.rd, i);
 			def(ins.rd, i);
 			break;
 		case instr::store:
@@ -206,9 +207,9 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 	case instr::imm:
 		return os << "imm   %" << ins.rd << ", #" << ins.rs1;
 	case instr::load_local:
-		return os << "load  %" << ins.rd << ", locals[%" << ins.rs1 << "]";
+		return os << "load  %" << ins.rd << ", local_" << ins.rs1;
 	case instr::store_local:
-		return os << "store %" << ins.rd << ", locals[%" << ins.rs1 << "]";
+		return os << "store %" << ins.rd << ", local_" << ins.rs1;
 	default:
 		assert(false);
 	}
@@ -319,7 +320,6 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		for (reg r = 0; r < v_reg; ++r) {
 			if (interference.has(r)) {
 				mapping[r].status = color::potential_spill;
-				mapping[r].address = r;
 				interference.remove(r);
 				stk.push(r);
 			}
@@ -347,6 +347,20 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		std::vector<instr> next_code;
 		auto next_v_reg = v_reg;
 		const auto spilled = [&] (reg r) { return std::find(spills.cbegin(), spills.cend(), r) != spills.cend(); };
+		const auto use = [&] (reg r) {
+			const auto it = std::find(spills.cbegin(), spills.cend(), r);
+			if (it != spills.cend()) {
+				next_code.emplace_back(instr::load_local, r = next_v_reg++, std::distance(spills.cbegin(), it));
+			}
+			return r;
+		};
+		const auto def = [&] (reg r) {
+			const auto it = std::find(spills.cbegin(), spills.cend(), r);
+			if (it != spills.cend()) {
+				next_code.emplace_back(instr::store_local, r = next_v_reg++, std::distance(spills.cbegin(), it));
+			}
+			return r;
+		};
 		for (const auto ins : code) {
 			reg rd = ins.rd;
 			reg rs1 = ins.rs1;
@@ -357,61 +371,37 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			switch (ins.opcode) {
 			case instr::def:
 			case instr::imm:
-				next_code.push_back(ins);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, ins.rd, ins.rd);
-				}
+				patchme = &next_code.emplace_back(ins);
+				def(rd);
 				break;
 			case instr::req:
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
-				}
+				rd = use(rd);
 				next_code.emplace_back(ins.opcode, rd);
 				break;
 			case instr::copy:
 			case instr::load:
-				if (spilled(ins.rs1)) {
-					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
-				}
+				rs1 = use(rs1);
 				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-					patchme->rd = rd;
-				}
+				patchme->rd = def(rd);
 				break;
 			case instr::add:
-				if (spilled(ins.rs1)) {
-					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
-				}
-				if (spilled(ins.rs2)) {
-					next_code.emplace_back(instr::load_local, rs2 = next_v_reg++, ins.rs2);
-				}
+				rs1 = use(rs1);
+				rs2 = use(rs2);
 				patchme = &next_code.emplace_back(ins.opcode, rd, rs1, rs2);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-					patchme->rd = rd;
-				}
+				patchme->rd = def(rd);
 				break;
 			case instr::store:
-				if (spilled(ins.rs1)) {
-					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
-				}
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-				}
+				rs1 = use(rs1);
+				rd = use(rd);
 				next_code.emplace_back(ins.opcode, rd, rs1);
 				break;
 			case instr::load_local:
 				// maybe could delete the variable if this is executed
-				next_code.emplace_back(ins.opcode, rd, rs1);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-				}
+				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
+				patchme->rd = use(rd);
 				break;
 			case instr::store_local:
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
-				}
+				rd = use(rd);
 				next_code.emplace_back(ins.opcode, rd, rs1);
 				break;
 			}
