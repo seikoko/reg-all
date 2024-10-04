@@ -347,7 +347,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		std::vector<instr> next_code;
 		auto next_v_reg = v_reg;
 		const auto spilled = [&] (reg r) { return std::find(spills.cbegin(), spills.cend(), r) != spills.cend(); };
-		for (const auto &ins : code) {
+		for (const auto ins : code) {
 			reg rd = ins.rd;
 			reg rs1 = ins.rs1;
 			reg rs2 = ins.rs2;
