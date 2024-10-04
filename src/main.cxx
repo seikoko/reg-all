@@ -25,6 +25,8 @@ struct instr
 		copy,  // rd <- rs1
 		load,  // rd <- [rs1]
 		store, // rd -> [rs1]
+		load_local,  // rd <- locals[rs1]
+		store_local, // rd -> locals[rs1]
 		add,   // rd <- rs1 + rs2
 		imm,   // rd <- value(rs1)
 	} opcode;
@@ -127,43 +129,42 @@ bool graph::has(reg s) const
 graph gen_graph(reg count, std::vector<instr> const &v)
 {
 	graph g(count);
+	// [definition, last use)
 	std::vector<std::pair<reg, reg>> live;
 	for (reg r = 0; r < count; ++r) {
 		live.emplace_back(reg(-1), reg(0));
 	}
+	const auto use = [&] (reg r, reg index) { if (live[r].second < index) live[r].second = index; };
+	const auto def = [&] (reg r, reg index) { if (live[r].first  > index) live[r].first  = index; };
 	for (reg i = 0; i < v.size(); ++i) {
 		const auto ins = v[i];
-		if (ins.opcode != instr::store) {
-			const reg defined = ins.rd;
-			if (live[defined].first > i) {
-				live[defined].first = i;
-			}
-		}
 		switch (ins.opcode) {
 		case instr::add:
-			if (live[ins.rs2].second < i) {
-				live[ins.rs2].second = i;
-			}
+			use(ins.rs2, i);
 			// fallthrough
 		case instr::copy:
 		case instr::load:
-		case instr::store:
-			if (live[ins.rs1].second < i) {
-				live[ins.rs1].second = i;
-			}
+			use(ins.rs1, i);
 			// fallthrough
 		case instr::def:
 		case instr::imm:
+		case instr::load_local:
+			def(ins.rd, i);
+			break;
+		case instr::store:
+			use(ins.rs1, i);
+			// fallthrough
+		case instr::store_local:
+			use(ins.rd, i);
 			break;
 		case instr::req:
-			if (live[ins.rd].second < i) {
-				live[ins.rd].second = i;
-			}
+			use(ins.rd, i);
 			break;
 		}
+
 	}
 	for (reg r = 0; r < count; ++r) {
-		assert(live[r].second != 0);
+		assert(live[r].second != 0 || live[r].first == reg(-1));
 	}
 	for (reg t = 1; t < count; ++t) {
 		for (reg s = 0; s < t; ++s) {
@@ -191,28 +192,26 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 {
 	switch (ins.opcode) {
 	case instr::def:
-		os << "def   %" << ins.rd;
-		break;
+		return os << "def   %" << ins.rd;
 	case instr::req:
-		os << "req   %" << ins.rd;
-		break;
+		return os << "req   %" << ins.rd;
 	case instr::copy:
-		os << "copy  %" << ins.rd << ", %" << ins.rs1;
-		break;
+		return os << "copy  %" << ins.rd << ", %" << ins.rs1;
 	case instr::load:
-		os << "load  %" << ins.rd << ", [%" << ins.rs1 << "]";
-		break;
+		return os << "load  %" << ins.rd << ", [%" << ins.rs1 << "]";
 	case instr::store:
-		os << "store %" << ins.rd << ", [%" << ins.rs1 << "]";
-		break;
+		return os << "store %" << ins.rd << ", [%" << ins.rs1 << "]";
 	case instr::add:
-		os << "add   %" << ins.rd << ", %" << ins.rs1 << ", %" << ins.rs2;
-		break;
+		return os << "add   %" << ins.rd << ", %" << ins.rs1 << ", %" << ins.rs2;
 	case instr::imm:
-		os << "imm   %" << ins.rd << ", #" << ins.rs1;
-		break;
+		return os << "imm   %" << ins.rd << ", #" << ins.rs1;
+	case instr::load_local:
+		return os << "load  %" << ins.rd << ", locals[%" << ins.rs1 << "]";
+	case instr::store_local:
+		return os << "store %" << ins.rd << ", locals[%" << ins.rs1 << "]";
+	default:
+		assert(false);
 	}
-	return os;
 }
 
 std::ostream &operator<<(std::ostream &os, graph const &g)
@@ -283,7 +282,7 @@ reg bits(reg r)
 	return bit(r) - 1;
 }
 
-stack<reg> strip(graph &g, reg n_reg, reg v_reg)
+stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
 {
 	stack<reg> stk;
 	for (reg best, best_reg;;) {
@@ -291,55 +290,136 @@ stack<reg> strip(graph &g, reg n_reg, reg v_reg)
 		best = n_reg;
 		best_reg = v_reg + 1;
 		for (reg r = 0; r < v_reg; ++r) {
-			if (!g.has(r))
+			if (!interference.has(r))
 				continue;
-			if (g.degree[r] < best) {
-				best = g.degree[r];
+			if (interference.degree[r] < best) {
+				best = interference.degree[r];
 				best_reg = r;
 			}
 		}
 
 		if (best_reg == v_reg + 1) break;
 		stk.push(best_reg);
-		// TODO: potential optimization : just set g.degree[r] = v_reg+1 so removed nodes are never selected
-		g.remove(best_reg);
+		// TODO: potential optimization : just set interference.degree[r] = v_reg+1 so removed nodes are never selected
+		interference.remove(best_reg);
 	}
 	return stk;
 }
 
-std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> const &v)
+std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 {
-	auto g = gen_graph(v_reg, v);
-	std::vector<color> mapping(v_reg);
-	stack<reg> stk = strip(g, n_reg, v_reg);
+	std::vector<reg> spills;
+	std::vector<color> mapping;
+	do {
+		spills.clear();
+		mapping = std::vector<color>(v_reg);
+		auto interference = gen_graph(v_reg, code);
+		stack<reg> stk = strip(interference, n_reg, v_reg);
 
-	for (reg r = 0; r < v_reg; ++r) {
-		if (g.has(r)) {
-			mapping[r].status = color::potential_spill;
-			mapping[r].address = r;
-			g.remove(r);
-			stk.push(r);
+		for (reg r = 0; r < v_reg; ++r) {
+			if (interference.has(r)) {
+				mapping[r].status = color::potential_spill;
+				mapping[r].address = r;
+				interference.remove(r);
+				stk.push(r);
+			}
 		}
-	}
 
-	while (!stk.empty()) {
-		const auto s = stk.pop();
-		// represents a mask of neighboring registers in use
-		reg used = 0;
-		for (const auto t : g.ladj[s]) {
-			if (mapping[t].status == color::phys_reg)
-				used |= reg{1} << mapping[t].address;
+		while (!stk.empty()) {
+			const auto s = stk.pop();
+			// represents a mask of neighboring registers in use
+			reg used = 0;
+			for (const auto t : interference.ladj[s]) {
+				if (mapping[t].status == color::phys_reg)
+					used |= bit(mapping[t].address);
+			}
+			// equivalent of bitwise NOT when you only consider the n_reg first bits
+			const reg free = bits(n_reg) ^ used;
+			if (free) {
+				mapping[s].status  = color::phys_reg;
+				mapping[s].address = some_bit_index(free);
+			} else {
+				mapping[s].status = color::actual_spill;
+				spills.push_back(s);
+			}
 		}
-		// equivalent of bitwise NOT when you only consider the n_reg first bits
-		const reg free = bits(n_reg) ^ used;
-		if (free) {
-			mapping[s].status  = color::phys_reg;
-			mapping[s].address = some_bit_index(free);
-		} else {
-			mapping[s].status = color::actual_spill;
-		}
-	}
 
+		std::vector<instr> next_code;
+		auto next_v_reg = v_reg;
+		const auto spilled = [&] (reg r) { return std::find(spills.cbegin(), spills.cend(), r) != spills.cend(); };
+		for (const auto &ins : code) {
+			reg rd = ins.rd;
+			reg rs1 = ins.rs1;
+			reg rs2 = ins.rs2;
+			instr *patchme;
+			// force patchme to be valid during the iteration
+			next_code.reserve(next_code.size() + 4);
+			switch (ins.opcode) {
+			case instr::def:
+			case instr::imm:
+				next_code.push_back(ins);
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::store_local, ins.rd, ins.rd);
+				}
+				break;
+			case instr::req:
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
+				}
+				next_code.emplace_back(ins.opcode, rd);
+				break;
+			case instr::copy:
+			case instr::load:
+				if (spilled(ins.rs1)) {
+					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
+				}
+				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+					patchme->rd = rd;
+				}
+				break;
+			case instr::add:
+				if (spilled(ins.rs1)) {
+					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
+				}
+				if (spilled(ins.rs2)) {
+					next_code.emplace_back(instr::load_local, rs2 = next_v_reg++, ins.rs2);
+				}
+				patchme = &next_code.emplace_back(ins.opcode, rd, rs1, rs2);
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+					patchme->rd = rd;
+				}
+				break;
+			case instr::store:
+				if (spilled(ins.rs1)) {
+					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
+				}
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+				}
+				next_code.emplace_back(ins.opcode, rd, rs1);
+				break;
+			case instr::load_local:
+				// maybe could delete the variable if this is executed
+				next_code.emplace_back(ins.opcode, rd, rs1);
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+				}
+				break;
+			case instr::store_local:
+				if (spilled(ins.rd)) {
+					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
+				}
+				next_code.emplace_back(ins.opcode, rd, rs1);
+				break;
+			}
+		}
+
+		code = next_code;
+		v_reg = next_v_reg;
+	} while (!spills.empty());
 	return mapping;
 }
 
@@ -366,6 +446,7 @@ int main()
 	auto g = gen_graph(10, v);
 	std::cout << g;
 	auto m = gcolor(4, 10, v);
+	std::cout << v;
 	std::cout << m;
 	return 0;
 }
