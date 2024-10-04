@@ -20,6 +20,7 @@ std::ostream &operator<<(std::ostream &os, color c) { return os << "vpsr"[c.stat
 struct instr
 {
 	enum {
+		none, // illegal
 		def,   // rd <- ?
 		req,   // rd -> ?
 		copy,  // rd <- rs1
@@ -161,6 +162,8 @@ graph gen_graph(reg count, std::vector<instr> const &v)
 		case instr::req:
 			use(ins.rd, i);
 			break;
+		case instr::none:
+			assert(false);
 		}
 
 	}
@@ -320,6 +323,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		for (reg r = 0; r < v_reg; ++r) {
 			if (interference.has(r)) {
 				mapping[r].status = color::potential_spill;
+				// TODO: maybe remove
 				interference.remove(r);
 				stk.push(r);
 			}
@@ -337,6 +341,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			const reg free = bits(n_reg) ^ used;
 			if (free) {
 				mapping[s].status  = color::phys_reg;
+				// TODO: use some form of heuristic
 				mapping[s].address = some_bit_index(free);
 			} else {
 				mapping[s].status = color::actual_spill;
@@ -351,7 +356,8 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			const auto it = std::find(spills.cbegin(), spills.cend(), r);
 			if (it != spills.cend()) {
 				const reg next_r = next_v_reg++;
-				next_code.emplace_back(u == use ? instr::load_local: instr::store_local, next_r, r);
+				const auto opcode = u == use ? instr::load_local: u == def ? instr::store_local: (__builtin_unreachable(), instr::none);
+				next_code.emplace_back(opcode, next_r, r);
 				r = next_r;
 			}
 			return r;
@@ -399,6 +405,8 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 				rd = ref(rd, use);
 				next_code.emplace_back(ins.opcode, rd, rs1);
 				break;
+			case instr::none:
+				assert(false);
 			}
 		}
 
