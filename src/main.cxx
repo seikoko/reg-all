@@ -346,7 +346,16 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 
 		std::vector<instr> next_code;
 		auto next_v_reg = v_reg;
-		const auto spilled = [&] (reg r) { return std::find(spills.cbegin(), spills.cend(), r) != spills.cend(); };
+		enum usage { use, def };
+		const auto ref = [&] (reg r, usage u) {
+			const auto it = std::find(spills.cbegin(), spills.cend(), r);
+			if (it != spills.cend()) {
+				const reg next_r = next_v_reg++;
+				next_code.emplace_back(u == use ? instr::load_local: instr::store_local, next_r, r);
+				r = next_r;
+			}
+			return r;
+		};
 		for (const auto ins : code) {
 			reg rd = ins.rd;
 			reg rs1 = ins.rs1;
@@ -358,62 +367,36 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			case instr::def:
 			case instr::imm:
 				patchme = &next_code.emplace_back(ins);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-					patchme->rd = rd;
-				}
+				patchme->rd = ref(rd, def);
 				break;
 			case instr::req:
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
-				}
+				rd = ref(rd, use);
 				next_code.emplace_back(ins.opcode, rd);
 				break;
 			case instr::copy:
 			case instr::load:
-				if (spilled(ins.rs1)) {
-					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
-				}
+				rs1 = ref(rs1, use);
 				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-					patchme->rd = rd;
-				}
+				patchme->rd = ref(rd, def);
 				break;
 			case instr::add:
-				if (spilled(ins.rs1)) {
-					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
-				}
-				if (spilled(ins.rs2)) {
-					next_code.emplace_back(instr::load_local, rs2 = next_v_reg++, ins.rs2);
-				}
+				rs1 = ref(rs1, use);
+				rs2 = ref(rs2, use);
 				patchme = &next_code.emplace_back(ins.opcode, rd, rs1, rs2);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-					patchme->rd = rd;
-				}
+				patchme->rd = ref(rd, def);
 				break;
 			case instr::store:
-				if (spilled(ins.rs1)) {
-					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
-				}
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
-				}
+				rs1 = ref(rs1, use);
+				rd  = ref(rd , use);
 				next_code.emplace_back(ins.opcode, rd, rs1);
 				break;
 			case instr::load_local:
 				// maybe could delete the variable if this is executed
 				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
-					patchme->rd = rd;
-				}
+				patchme->rd = ref(rd, def);
 				break;
 			case instr::store_local:
-				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
-				}
+				rd = ref(rd, use);
 				next_code.emplace_back(ins.opcode, rd, rs1);
 				break;
 			}
