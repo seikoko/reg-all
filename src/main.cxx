@@ -357,9 +357,10 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			switch (ins.opcode) {
 			case instr::def:
 			case instr::imm:
-				next_code.push_back(ins);
+				patchme = &next_code.emplace_back(ins);
 				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, ins.rd, ins.rd);
+					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+					patchme->rd = rd;
 				}
 				break;
 			case instr::req:
@@ -403,9 +404,10 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 				break;
 			case instr::load_local:
 				// maybe could delete the variable if this is executed
-				next_code.emplace_back(ins.opcode, rd, rs1);
+				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
 				if (spilled(ins.rd)) {
 					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+					patchme->rd = rd;
 				}
 				break;
 			case instr::store_local:
