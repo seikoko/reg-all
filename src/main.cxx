@@ -398,7 +398,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 					next_code.emplace_back(instr::load_local, rs1 = next_v_reg++, ins.rs1);
 				}
 				if (spilled(ins.rd)) {
-					next_code.emplace_back(instr::store_local, rd = next_v_reg++, ins.rd);
+					next_code.emplace_back(instr::load_local, rd = next_v_reg++, ins.rd);
 				}
 				next_code.emplace_back(ins.opcode, rd, rs1);
 				break;
