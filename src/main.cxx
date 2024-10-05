@@ -9,11 +9,9 @@
 
 using reg = std::uint32_t;
 
-enum reg_detail { virt_reg, potential_spill, actual_spill, phys_reg };
-
 struct instr
 {
-	enum {
+	enum opcode_t {
 		none, // illegal
 		def,   // rd <- ?
 		req,   // rd -> ?
@@ -291,6 +289,12 @@ stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
 		// TODO: potential optimization : just set interference.degree[r] = v_reg+1 so removed nodes are never selected
 		interference.remove(best_reg);
 	}
+	// FIXME: this should be part of the loop above
+	for (reg r = 0; r < v_reg; ++r) {
+		if (interference.has(r)) {
+			stk.push(r);
+		}
+	}
 	return stk;
 }
 
@@ -301,18 +305,9 @@ std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 	do {
 		spilled = false;
 		mapping = std::vector<reg>(v_reg);
-		bitset<reg_detail, 2> color_status(v_reg);
+		bitset<bool, 1> bound(v_reg);
 		auto interference = gen_graph(v_reg, code);
 		stack<reg> stk = strip(interference, n_reg, v_reg);
-
-		for (reg r = 0; r < v_reg; ++r) {
-			if (interference.has(r)) {
-				color_status.set(r, reg_detail::potential_spill);
-				// TODO: maybe remove
-				interference.remove(r);
-				stk.push(r);
-			}
-		}
 
 		while (!stk.empty()) {
 			const auto s = stk.pop();
@@ -320,17 +315,16 @@ std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			// TODO: should be a bitset
 			reg used = 0;
 			for (const auto t : interference.ladj[s]) {
-				if (color_status[t] == reg_detail::phys_reg)
+				if (bound[t])
 					used |= bit(mapping[t]);
 			}
 			// equivalent of bitwise NOT when you only consider the n_reg first bits
 			const reg free = bits(n_reg) ^ used;
+			bound.set(s, !!free);
 			if (free) {
-				color_status.set(s, reg_detail::phys_reg);
 				// TODO: use some form of heuristic
 				mapping[s] = some_bit_index(free);
 			} else {
-				color_status.set(s, reg_detail::actual_spill);
 				spilled = true;
 			}
 		}
@@ -339,9 +333,10 @@ std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		auto next_v_reg = v_reg;
 		enum usage { use, def };
 		const auto ref = [&] (reg r, usage u) {
-			if (color_status[r] == reg_detail::actual_spill) {
+			if (!bound[r]) {
 				const reg next_r = next_v_reg++;
-				const auto opcode = u == use ? instr::load_local: u == def ? instr::store_local: (__builtin_unreachable(), instr::none);
+				static_assert(instr::load_local + 1 == instr::store_local);
+				const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
 				next_code.emplace_back(opcode, next_r, r);
 				r = next_r;
 			}
