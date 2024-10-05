@@ -133,58 +133,6 @@ bool graph::has(reg s) const
 	return !removed[s];
 }
 
-graph gen_graph(reg count, std::vector<instr> const &v)
-{
-	graph g(count);
-	// [definition, last use)
-	std::vector<std::pair<reg, reg>> live;
-	for (reg r = 0; r < count; ++r) {
-		live.emplace_back(reg(-1), reg(0));
-	}
-	const auto use = [&] (reg r, reg index) { if (live[r].second < index) live[r].second = index; };
-	const auto def = [&] (reg r, reg index) { if (live[r].first  > index) live[r].first  = index; };
-	for (reg i = 0; i < v.size(); ++i) {
-		const auto ins = v[i];
-		switch (ins.opcode) {
-		case instr::add:
-			use(ins.rs2, i);
-			// fallthrough
-		case instr::copy:
-		case instr::load:
-			use(ins.rs1, i);
-			// fallthrough
-		case instr::def:
-		case instr::imm:
-		case instr::load_local:
-			use(ins.rd, i);
-			def(ins.rd, i);
-			break;
-		case instr::store:
-			use(ins.rs1, i);
-			// fallthrough
-		case instr::store_local:
-			use(ins.rd, i);
-			break;
-		case instr::req:
-			use(ins.rd, i);
-			break;
-		}
-
-	}
-	for (reg r = 0; r < count; ++r) {
-		assert(live[r].second != 0 || live[r].first == reg(-1));
-	}
-	for (reg t = 1; t < count; ++t) {
-		for (reg s = 0; s < t; ++s) {
-			bool overlap = live[s].first < live[t].second && live[t].first < live[s].second;
-			if (overlap) {
-				g.link(s, t);
-			}
-		}
-	}
-	return g;
-}
-
 template <typename T>
 std::ostream &operator<<(std::ostream &os, std::vector<T> const &v)
 {
@@ -265,6 +213,63 @@ T stack<T>::pop()
 	return val;
 }
 
+struct code_t : public std::vector<instr>
+{
+	reg regs;
+};
+
+graph gen_graph(code_t const &code)
+{
+	graph g(code.regs);
+	// [definition, last use)
+	std::vector<std::pair<reg, reg>> live;
+	for (reg r = 0; r < code.regs; ++r) {
+		live.emplace_back(reg(-1), reg(0));
+	}
+	const auto use = [&] (reg r, reg index) { if (live[r].second < index) live[r].second = index; };
+	const auto def = [&] (reg r, reg index) { if (live[r].first  > index) live[r].first  = index; };
+	for (reg i = 0; i < code.size(); ++i) {
+		const auto ins = code[i];
+		switch (ins.opcode) {
+		case instr::add:
+			use(ins.rs2, i);
+			// fallthrough
+		case instr::copy:
+		case instr::load:
+			use(ins.rs1, i);
+			// fallthrough
+		case instr::def:
+		case instr::imm:
+		case instr::load_local:
+			use(ins.rd, i);
+			def(ins.rd, i);
+			break;
+		case instr::store:
+			use(ins.rs1, i);
+			// fallthrough
+		case instr::store_local:
+			use(ins.rd, i);
+			break;
+		case instr::req:
+			use(ins.rd, i);
+			break;
+		}
+
+	}
+	for (reg r = 0; r < code.regs; ++r) {
+		assert(live[r].second != 0 || live[r].first == reg(-1));
+	}
+	for (reg t = 1; t < code.regs; ++t) {
+		for (reg s = 0; s < t; ++s) {
+			bool overlap = live[s].first < live[t].second && live[t].first < live[s].second;
+			if (overlap) {
+				g.link(s, t);
+			}
+		}
+	}
+	return g;
+}
+
 stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 {
 	stack<reg> stk;
@@ -319,15 +324,13 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg virt_regs
 	return mapping;
 }
 
-std::vector<instr> rewrite(std::vector<instr> const &code, reg virt_regs, reg *pnext_virt_regs, bitset<bool, 1> const &bound)
+code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 {
-	auto next_virt_regs = virt_regs;
-	std::vector<instr> next_code;
-
+	code_t next_code = { {}, code.regs };
 	enum usage { use, def };
 	const auto ref = [&] (reg r, usage u) {
 		if (!bound[r]) {
-			const reg next_r = next_virt_regs++;
+			const reg next_r = next_code.regs++;
 			static_assert(instr::load_local + 1 == instr::store_local);
 			const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
 			next_code.emplace_back(opcode, next_r, r);
@@ -378,19 +381,18 @@ std::vector<instr> rewrite(std::vector<instr> const &code, reg virt_regs, reg *p
 			break;
 		}
 	}
-	*pnext_virt_regs = next_virt_regs;
 	return next_code;
 }
 
-std::vector<reg> gcolor(reg phys_regs, reg virt_regs, std::vector<instr> &code)
+std::vector<reg> gcolor(reg phys_regs, code_t &code)
 {
 	while (true) {
-		auto interference = gen_graph(virt_regs, code);
-		stack<reg> stk = strip(interference, phys_regs, virt_regs);
+		auto interference = gen_graph(code);
+		stack<reg> stk = strip(interference, phys_regs, code.regs);
 		bool spilled = false;
-		bitset<bool, 1> bound(virt_regs);
-		const auto mapping = select(interference, std::move(stk), virt_regs, phys_regs, &spilled, bound);
-		code = rewrite(code, virt_regs, &virt_regs, bound);
+		bitset<bool, 1> bound(code.regs);
+		const auto mapping = select(interference, std::move(stk), code.regs, phys_regs, &spilled, bound);
+		code = rewrite(code, bound);
 		if (!spilled)
 			return mapping;
 	}
@@ -398,28 +400,31 @@ std::vector<reg> gcolor(reg phys_regs, reg virt_regs, std::vector<instr> &code)
 
 int main()
 {
-	std::vector<instr> v{
-		{ instr::def , 8 },
-		{ instr::def , 7 },
-		{ instr::load, 5, 7 },
-		{ instr::add , 6, 8, 5 },
-		{ instr::add , 4, 5, 6 },
-		{ instr::load, 3, 7 },
-		{ instr::load, 9, 7 },
-		{ instr::load, 0, 4 },
-		{ instr::add , 1, 3, 0 },
-		{ instr::copy, 2, 1 },
-		{ instr::add , 8, 9, 2 },
-		{ instr::copy, 7, 0 },
-		{ instr::req , 2 },
-		{ instr::req , 8 },
-		{ instr::req , 7 },
+	code_t code{
+		{
+			{ instr::def , 8 },
+			{ instr::def , 7 },
+			{ instr::load, 5, 7 },
+			{ instr::add , 6, 8, 5 },
+			{ instr::add , 4, 5, 6 },
+			{ instr::load, 3, 7 },
+			{ instr::load, 9, 7 },
+			{ instr::load, 0, 4 },
+			{ instr::add , 1, 3, 0 },
+			{ instr::copy, 2, 1 },
+			{ instr::add , 8, 9, 2 },
+			{ instr::copy, 7, 0 },
+			{ instr::req , 2 },
+			{ instr::req , 8 },
+			{ instr::req , 7 },
+		},
+		10
 	};
-	std::cout << v;
-	auto g = gen_graph(10, v);
+	std::cout << code;
+	auto g = gen_graph(code);
 	std::cout << g;
-	auto m = gcolor(4, 10, v);
-	std::cout << v;
+	auto m = gcolor(4, code);
+	std::cout << code;
 	std::cout << m;
 	return 0;
 }
