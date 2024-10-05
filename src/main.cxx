@@ -36,62 +36,76 @@ struct instr
 	reg rs2;
 };
 
+reg lsb(reg r)
+{
+	return r & -r;
+}
+
+reg ctz(reg r)
+{
+	return __builtin_ctz(r);
+}
+
+reg some_bit_index(reg r)
+{
+	return ctz(lsb(r));
+}
+
+reg bit(reg r)
+{
+	return reg{1} << (r % (CHAR_BIT * sizeof r));
+}
+
+reg bits(reg r)
+{
+	return bit(r) - 1;
+}
+
+template <size_t bits>
 struct bitset
 {
 	using unit = std::uint32_t;
-	enum { unit_bits = sizeof(unit) * 8 };
+	enum { unit_bits = sizeof(unit) * CHAR_BIT };
+	static_assert(bits <= unit_bits, "large bitfield not supported");
+	static_assert(bits != 0 && (bits & (bits-1)) == 0, "non power of 2 bitcount not supported");
 
-	bitset(unit bits);
-	bool operator[](unit i) const;
-	void set(unit i);
-	void unset(unit i);
-	void push();
+	bitset(unit elems);
+	unit operator[](unit i) const;
+	void set(unit i, unit value);
 
 	std::vector<unit> data;
-	unit bits;
+	unit elems;
 };
 
-bitset::bitset(unit bits)
-	: bits(bits)
+template <size_t bits>
+bitset<bits>::bitset(unit elems)
+	: elems(elems)
 {
-	const auto units = (bits + unit_bits - 1) / unit_bits;
+	const auto units = (elems * bits + unit_bits - 1) / unit_bits;
 	data.assign(units, 0);
 }
 
-bool bitset::operator[](std::uint32_t i) const
+template <size_t bits>
+typename bitset<bits>::unit bitset<bits>::operator[](std::uint32_t i) const
 {
-	assert(i < bits);
-	return (data[i / unit_bits] >> (i % unit_bits)) & 1;
+	assert(i < elems);
+	return (data[i * bits / unit_bits] >> (i * bits % unit_bits)) & ::bits(bits);
 }
 
-void bitset::set(unit i)
+template <size_t bits>
+void bitset<bits>::set(unit i, unit value)
 {
-	assert(i < bits);
-	unit msk = unit{1} << (i % unit_bits);
-	data[i / unit_bits] &= ~msk;
-	data[i / unit_bits] |=  msk;
-}
-
-void bitset::unset(unit i)
-{
-	assert(i < bits);
-	unit msk = unit{1} << (i % unit_bits);
-	data[i / unit_bits] &= ~msk;
-}
-
-void bitset::push()
-{
-	const auto units = (++bits + unit_bits - 1) / unit_bits;
-	if (units > data.size()) {
-		data.push_back(0);
-	}
+	assert(i < elems);
+	unit msk = ::bits(bits) << (i * bits % unit_bits);
+	data[i * bits / unit_bits] &= ~msk;
+	data[i * bits / unit_bits] |=  msk & (value << (i * bits % unit_bits));
 }
 
 struct graph
 {
 	std::vector<std::vector<reg>> ladj;
 	std::vector<reg> degree;
-	bitset removed;
+	bitset<1> removed;
 
 	graph(reg count);
 
@@ -116,7 +130,7 @@ void graph::link(reg s, reg t)
 
 void graph::remove(reg s)
 {
-	removed.set(s);
+	removed.set(s, true);
 	for (const auto t : ladj[s]) {
 		degree[t]--;
 	}
@@ -259,31 +273,6 @@ T stack<T>::pop()
 	T val = this->back();
 	this->pop_back();
 	return val;
-}
-
-reg lsb(reg r)
-{
-	return r & -r;
-}
-
-reg ctz(reg r)
-{
-	return __builtin_ctz(r);
-}
-
-reg some_bit_index(reg r)
-{
-	return ctz(lsb(r));
-}
-
-reg bit(reg r)
-{
-	return reg{1} << (r % (CHAR_BIT * sizeof r));
-}
-
-reg bits(reg r)
-{
-	return bit(r) - 1;
 }
 
 stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
