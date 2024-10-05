@@ -9,13 +9,7 @@
 
 using reg = std::uint32_t;
 
-struct color
-{
-	enum { virt_reg, potential_spill, actual_spill, phys_reg } status;
-	reg address;
-};
-
-std::ostream &operator<<(std::ostream &os, color c) { return os << "vpsr"[c.status] << std::hex << c.address; }
+enum reg_detail { virt_reg, potential_spill, actual_spill, phys_reg };
 
 struct instr
 {
@@ -53,6 +47,7 @@ reg some_bit_index(reg r)
 
 reg bit(reg r)
 {
+	assert(r < CHAR_BIT * sizeof r);
 	return reg{1} << (r % (CHAR_BIT * sizeof r));
 }
 
@@ -299,19 +294,20 @@ stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
 	return stk;
 }
 
-std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
+std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 {
 	bool spilled;
-	std::vector<color> mapping;
+	std::vector<reg> mapping;
 	do {
 		spilled = false;
-		mapping = std::vector<color>(v_reg);
+		mapping = std::vector<reg>(v_reg);
+		bitset<reg_detail, 2> color_status(v_reg);
 		auto interference = gen_graph(v_reg, code);
 		stack<reg> stk = strip(interference, n_reg, v_reg);
 
 		for (reg r = 0; r < v_reg; ++r) {
 			if (interference.has(r)) {
-				mapping[r].status = color::potential_spill;
+				color_status.set(r, reg_detail::potential_spill);
 				// TODO: maybe remove
 				interference.remove(r);
 				stk.push(r);
@@ -321,19 +317,20 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		while (!stk.empty()) {
 			const auto s = stk.pop();
 			// represents a mask of neighboring registers in use
+			// TODO: should be a bitset
 			reg used = 0;
 			for (const auto t : interference.ladj[s]) {
-				if (mapping[t].status == color::phys_reg)
-					used |= bit(mapping[t].address);
+				if (color_status[t] == reg_detail::phys_reg)
+					used |= bit(mapping[t]);
 			}
 			// equivalent of bitwise NOT when you only consider the n_reg first bits
 			const reg free = bits(n_reg) ^ used;
 			if (free) {
-				mapping[s].status  = color::phys_reg;
+				color_status.set(s, reg_detail::phys_reg);
 				// TODO: use some form of heuristic
-				mapping[s].address = some_bit_index(free);
+				mapping[s] = some_bit_index(free);
 			} else {
-				mapping[s].status = color::actual_spill;
+				color_status.set(s, reg_detail::actual_spill);
 				spilled = true;
 			}
 		}
@@ -342,7 +339,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		auto next_v_reg = v_reg;
 		enum usage { use, def };
 		const auto ref = [&] (reg r, usage u) {
-			if (mapping[r].status == color::actual_spill) {
+			if (color_status[r] == reg_detail::actual_spill) {
 				const reg next_r = next_v_reg++;
 				const auto opcode = u == use ? instr::load_local: u == def ? instr::store_local: (__builtin_unreachable(), instr::none);
 				next_code.emplace_back(opcode, next_r, r);
