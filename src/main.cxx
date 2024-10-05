@@ -269,33 +269,34 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 {
 	stack<reg> stk;
 	while (true) {
-		// find min degree node
-		auto best = phys_regs;
-		reg best_reg = virt_regs + 1;
+		// find any node of insignificant degree
+		reg chosen_reg = virt_regs + 1;
 		for (reg r = 0; r < virt_regs; ++r) {
 			if (!interference.has(r))
 				continue;
-			if (interference.degree[r] < best) {
-				best = interference.degree[r];
-				best_reg = r;
+			if (interference.degree[r] < phys_regs) {
+				chosen_reg = r;
+				break;
 			}
 		}
 
-		if (best_reg == virt_regs + 1) break;
-		stk.push(best_reg);
+		if (chosen_reg == phys_regs + 1) break;
+		stk.push(chosen_reg);
 		// TODO: potential optimization : just set interference.degree[r] = virt_regs+1 so removed nodes are never selected
-		interference.remove(best_reg);
-	}
-	// FIXME: this should be part of the loop above
-	for (reg r = 0; r < virt_regs; ++r) {
-		if (interference.has(r)) {
-			stk.push(r);
-		}
+		interference.remove(chosen_reg);
 	}
 	return stk;
 }
 
-std::vector<reg> assign(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
+enum region
+{
+	virtual_register,
+	physical_register,
+	potential_spill,
+	actual_spill,
+};
+
+std::vector<reg> assign(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<region, 2> &assignment)
 {
 	auto mapping = std::vector<reg>(virt_regs);
 	while (!stk.empty()) {
@@ -304,30 +305,31 @@ std::vector<reg> assign(graph const &interference, stack<reg> stk, reg virt_regs
 		// TODO: should be a bitset
 		reg used = 0;
 		for (const auto t : interference.ladj[s]) {
-			if (bound[t])
+			if (assignment[t] == region::physical_register)
 				used |= bit(mapping[t]);
 		}
 		// equivalent of bitwise NOT when you only consider the phys_regs first bits
 		const reg free = bits(phys_regs) ^ used;
-		bound.set(s, !!free);
 		if (free) {
+			assignment.set(s, region::physical_register);
 			// TODO: use some form of heuristic
 			mapping[s] = some_bit_index(free);
 		} else {
+			assignment.set(s, region::actual_spill);
 			*spilled = true;
 		}
 	}
 	return mapping;
 }
 
-std::vector<instr> rewrite(std::vector<instr> const &code, reg virt_regs, reg *pnext_virt_regs, bitset<bool, 1> const &bound)
+std::vector<instr> rewrite(std::vector<instr> const &code, reg virt_regs, reg *pnext_virt_regs, bitset<region, 2> const &assignment)
 {
 	auto next_virt_regs = virt_regs;
 	std::vector<instr> next_code;
 
 	enum usage { use, def };
 	const auto ref = [&] (reg r, usage u) {
-		if (!bound[r]) {
+		if (assignment[r] == region::actual_spill) {
 			const reg next_r = next_virt_regs++;
 			static_assert(instr::load_local + 1 == instr::store_local);
 			const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
@@ -388,10 +390,15 @@ std::vector<reg> gcolor(reg phys_regs, reg virt_regs, std::vector<instr> &code)
 	while (true) {
 		auto interference = gen_graph(virt_regs, code);
 		stack<reg> stk = strip(interference, phys_regs, virt_regs);
+		for (reg r = 0; r < virt_regs; ++r) {
+			if (interference.has(r)) {
+				stk.push(r);
+			}
+		}
 		bool spilled = false;
-		bitset<bool, 1> bound(virt_regs);
-		const auto mapping = assign(interference, std::move(stk), virt_regs, phys_regs, &spilled, bound);
-		code = rewrite(code, virt_regs, &virt_regs, bound);
+		bitset<region, 2> assignment(virt_regs);
+		const auto mapping = assign(interference, std::move(stk), virt_regs, phys_regs, &spilled, assignment);
+		code = rewrite(code, virt_regs, &virt_regs, assignment);
 		if (!spilled)
 			return mapping;
 	}
