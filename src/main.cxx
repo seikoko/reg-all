@@ -61,7 +61,7 @@ reg bits(reg r)
 	return bit(r) - 1;
 }
 
-template <size_t bits>
+template <typename T, size_t bits = sizeof(T) * CHAR_BIT>
 struct bitset
 {
 	using unit = std::uint32_t;
@@ -70,42 +70,42 @@ struct bitset
 	static_assert(bits != 0 && (bits & (bits-1)) == 0, "non power of 2 bitcount not supported");
 
 	bitset(unit elems);
-	unit operator[](unit i) const;
-	void set(unit i, unit value);
+	T operator[](unit i) const;
+	void set(unit i, T value);
 
 	std::vector<unit> data;
 	unit elems;
 };
 
-template <size_t bits>
-bitset<bits>::bitset(unit elems)
+template <typename T, size_t bits>
+bitset<T, bits>::bitset(unit elems)
 	: elems(elems)
 {
 	const auto units = (elems * bits + unit_bits - 1) / unit_bits;
 	data.assign(units, 0);
 }
 
-template <size_t bits>
-typename bitset<bits>::unit bitset<bits>::operator[](std::uint32_t i) const
+template <typename T, size_t bits>
+T bitset<T, bits>::operator[](std::uint32_t i) const
 {
 	assert(i < elems);
-	return (data[i * bits / unit_bits] >> (i * bits % unit_bits)) & ::bits(bits);
+	return static_cast<T>((data[i * bits / unit_bits] >> (i * bits % unit_bits)) & ::bits(bits));
 }
 
-template <size_t bits>
-void bitset<bits>::set(unit i, unit value)
+template <typename T, size_t bits>
+void bitset<T, bits>::set(unit i, T value)
 {
 	assert(i < elems);
 	unit msk = ::bits(bits) << (i * bits % unit_bits);
 	data[i * bits / unit_bits] &= ~msk;
-	data[i * bits / unit_bits] |=  msk & (value << (i * bits % unit_bits));
+	data[i * bits / unit_bits] |=  msk & static_cast<unit>(value << (i * bits % unit_bits));
 }
 
 struct graph
 {
 	std::vector<std::vector<reg>> ladj;
 	std::vector<reg> degree;
-	bitset<1> removed;
+	bitset<bool, 1> removed;
 
 	graph(reg count);
 
