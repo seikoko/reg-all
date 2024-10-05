@@ -320,6 +320,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		auto interference = gen_graph(v_reg, code);
 		stack<reg> stk = strip(interference, n_reg, v_reg);
 
+		// TODO: move this inside strip
 		for (reg r = 0; r < v_reg; ++r) {
 			if (interference.has(r)) {
 				mapping[r].status = color::potential_spill;
