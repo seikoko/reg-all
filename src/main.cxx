@@ -265,29 +265,6 @@ T stack<T>::pop()
 	return val;
 }
 
-stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
-{
-	stack<reg> stk;
-	while (true) {
-		// find any node of insignificant degree
-		reg chosen_reg = virt_regs + 1;
-		for (reg r = 0; r < virt_regs; ++r) {
-			if (!interference.has(r))
-				continue;
-			if (interference.degree[r] < phys_regs) {
-				chosen_reg = r;
-				break;
-			}
-		}
-
-		if (chosen_reg == phys_regs + 1) break;
-		stk.push(chosen_reg);
-		// TODO: potential optimization : just set interference.degree[r] = virt_regs+1 so removed nodes are never selected
-		interference.remove(chosen_reg);
-	}
-	return stk;
-}
-
 enum region
 {
 	virtual_register,
@@ -296,7 +273,36 @@ enum region
 	actual_spill,
 };
 
-std::vector<reg> assign(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<region, 2> &assignment)
+stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs, bitset<region, 2> &assignment)
+{
+	stack<reg> stk;
+	// TODO: fix spaghetti
+	while (true) {
+		// find any node of insignificant degree
+		reg chosen_reg = virt_regs + 1;
+		reg max_deg = 0;
+		for (reg r = 0; r < virt_regs; ++r) {
+			if (!interference.has(r))
+				continue;
+			if (interference.degree[r] < phys_regs) {
+				chosen_reg = r;
+				goto insignificant;
+			} else if (interference.degree[r] > max_deg) {
+				chosen_reg = r;
+				max_deg = interference.degree[r];
+			}
+		}
+		if (chosen_reg == virt_regs + 1) break;
+		assignment.set(chosen_reg, region::potential_spill);
+	insignificant:
+		stk.push(chosen_reg);
+		// TODO: potential optimization : just set interference.degree[r] = virt_regs+1 so removed nodes are never selected
+		interference.remove(chosen_reg);
+	}
+	return stk;
+}
+
+std::vector<reg> select(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<region, 2> &assignment)
 {
 	auto mapping = std::vector<reg>(virt_regs);
 	while (!stk.empty()) {
@@ -315,6 +321,7 @@ std::vector<reg> assign(graph const &interference, stack<reg> stk, reg virt_regs
 			// TODO: use some form of heuristic
 			mapping[s] = some_bit_index(free);
 		} else {
+			assert(assignment[s] == region::potential_spill);
 			assignment.set(s, region::actual_spill);
 			*spilled = true;
 		}
@@ -389,15 +396,10 @@ std::vector<reg> gcolor(reg phys_regs, reg virt_regs, std::vector<instr> &code)
 {
 	while (true) {
 		auto interference = gen_graph(virt_regs, code);
-		stack<reg> stk = strip(interference, phys_regs, virt_regs);
-		for (reg r = 0; r < virt_regs; ++r) {
-			if (interference.has(r)) {
-				stk.push(r);
-			}
-		}
-		bool spilled = false;
 		bitset<region, 2> assignment(virt_regs);
-		const auto mapping = assign(interference, std::move(stk), virt_regs, phys_regs, &spilled, assignment);
+		stack<reg> stk = strip(interference, phys_regs, virt_regs, assignment);
+		bool spilled = false;
+		const auto mapping = select(interference, std::move(stk), virt_regs, phys_regs, &spilled, assignment);
 		code = rewrite(code, virt_regs, &virt_regs, assignment);
 		if (!spilled)
 			return mapping;
