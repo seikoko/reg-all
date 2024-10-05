@@ -11,7 +11,7 @@ using reg = std::uint32_t;
 
 struct instr
 {
-	enum opcode_t {
+	enum opcode_t : reg {
 		def,   // rd <- ?
 		req,   // rd -> ?
 		copy,  // rd <- rs1
@@ -295,98 +295,106 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 	return stk;
 }
 
+std::vector<reg> assign(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
+{
+	auto mapping = std::vector<reg>(virt_regs);
+	while (!stk.empty()) {
+		const auto s = stk.pop();
+		// represents a mask of neighboring registers in use
+		// TODO: should be a bitset
+		reg used = 0;
+		for (const auto t : interference.ladj[s]) {
+			if (bound[t])
+				used |= bit(mapping[t]);
+		}
+		// equivalent of bitwise NOT when you only consider the phys_regs first bits
+		const reg free = bits(phys_regs) ^ used;
+		bound.set(s, !!free);
+		if (free) {
+			// TODO: use some form of heuristic
+			mapping[s] = some_bit_index(free);
+		} else {
+			*spilled = true;
+		}
+	}
+	return mapping;
+}
+
+std::vector<instr> rewrite(std::vector<instr> const &code, reg virt_regs, reg *pnext_virt_regs, bitset<bool, 1> const &bound)
+{
+	auto next_virt_regs = virt_regs;
+	std::vector<instr> next_code;
+
+	enum usage { use, def };
+	const auto ref = [&] (reg r, usage u) {
+		if (!bound[r]) {
+			const reg next_r = next_virt_regs++;
+			static_assert(instr::load_local + 1 == instr::store_local);
+			const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
+			next_code.emplace_back(opcode, next_r, r);
+			r = next_r;
+		}
+		return r;
+	};
+
+	for (auto ins : code) {
+		// force patchme to be valid during the iteration
+		next_code.reserve(next_code.size() + 4);
+		switch (ins.opcode) {
+			instr *patchme;
+		case instr::def:
+		case instr::imm:
+			patchme = &next_code.emplace_back(ins);
+			patchme->rd = ref(ins.rd, def);
+			break;
+		case instr::req:
+			ins.rd = ref(ins.rd, use);
+			next_code.emplace_back(ins);
+			break;
+		case instr::copy:
+		case instr::load:
+			ins.rs1 = ref(ins.rs1, use);
+			patchme = &next_code.emplace_back(ins);
+			patchme->rd = ref(ins.rd, def);
+			break;
+		case instr::add:
+			ins.rs1 = ref(ins.rs1, use);
+			ins.rs2 = ref(ins.rs2, use);
+			patchme = &next_code.emplace_back(ins);
+			patchme->rd = ref(ins.rd, def);
+			break;
+		case instr::store:
+			ins.rs1 = ref(ins.rs1, use);
+			ins.rd  = ref(ins.rd , use);
+			next_code.emplace_back(ins);
+			break;
+		case instr::load_local:
+			// maybe could delete the variable if this is executed
+			patchme = &next_code.emplace_back(ins);
+			patchme->rd = ref(ins.rd, def);
+			break;
+		case instr::store_local:
+			ins.rd = ref(ins.rd, use);
+			next_code.emplace_back(ins);
+			break;
+		}
+	}
+	*pnext_virt_regs = next_virt_regs;
+	return next_code;
+}
+
 std::vector<reg> gcolor(reg phys_regs, reg virt_regs, std::vector<instr> &code)
 {
-	bool spilled;
-	std::vector<reg> mapping;
-	do {
-		spilled = false;
-		mapping = std::vector<reg>(virt_regs);
-		bitset<bool, 1> bound(virt_regs);
+	while (true) {
 		auto interference = gen_graph(virt_regs, code);
 		stack<reg> stk = strip(interference, phys_regs, virt_regs);
-
-		while (!stk.empty()) {
-			const auto s = stk.pop();
-			// represents a mask of neighboring registers in use
-			// TODO: should be a bitset
-			reg used = 0;
-			for (const auto t : interference.ladj[s]) {
-				if (bound[t])
-					used |= bit(mapping[t]);
-			}
-			// equivalent of bitwise NOT when you only consider the phys_regs first bits
-			const reg free = bits(phys_regs) ^ used;
-			bound.set(s, !!free);
-			if (free) {
-				// TODO: use some form of heuristic
-				mapping[s] = some_bit_index(free);
-			} else {
-				spilled = true;
-			}
-		}
-
-		std::vector<instr> next_code;
-		auto next_virt_regs = virt_regs;
-		enum usage { use, def };
-		const auto ref = [&] (reg r, usage u) {
-			if (!bound[r]) {
-				const reg next_r = next_virt_regs++;
-				static_assert(instr::load_local + 1 == instr::store_local);
-				const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
-				next_code.emplace_back(opcode, next_r, r);
-				r = next_r;
-			}
-			return r;
-		};
-
-		for (auto ins : code) {
-			// force patchme to be valid during the iteration
-			next_code.reserve(next_code.size() + 4);
-			switch (ins.opcode) {
-				instr *patchme;
-			case instr::def:
-			case instr::imm:
-				patchme = &next_code.emplace_back(ins);
-				patchme->rd = ref(ins.rd, def);
-				break;
-			case instr::req:
-				ins.rd = ref(ins.rd, use);
-				next_code.emplace_back(ins);
-				break;
-			case instr::copy:
-			case instr::load:
-				ins.rs1 = ref(ins.rs1, use);
-				patchme = &next_code.emplace_back(ins);
-				patchme->rd = ref(ins.rd, def);
-				break;
-			case instr::add:
-				ins.rs1 = ref(ins.rs1, use);
-				ins.rs2 = ref(ins.rs2, use);
-				patchme = &next_code.emplace_back(ins);
-				patchme->rd = ref(ins.rd, def);
-				break;
-			case instr::store:
-				ins.rs1 = ref(ins.rs1, use);
-				ins.rd  = ref(ins.rd , use);
-				next_code.emplace_back(ins);
-				break;
-			case instr::load_local:
-				// maybe could delete the variable if this is executed
-				patchme = &next_code.emplace_back(ins);
-				patchme->rd = ref(ins.rd, def);
-				break;
-			case instr::store_local:
-				ins.rd = ref(ins.rd, use);
-				next_code.emplace_back(ins);
-				break;
-			}
-		}
-
-		code = next_code;
-		virt_regs = next_virt_regs;
-	} while (spilled);
-	return mapping;
+		bool spilled = false;
+		bitset<bool, 1> bound(virt_regs);
+		const auto mapping = assign(interference, std::move(stk), virt_regs, phys_regs, &spilled, bound);
+		code = rewrite(code, virt_regs, &virt_regs, bound);
+		if (!spilled)
+			return mapping;
+	}
 }
 
 int main()
