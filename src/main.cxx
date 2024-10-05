@@ -312,10 +312,10 @@ stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
 
 std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 {
-	std::vector<reg> spills;
+	bool spilled;
 	std::vector<color> mapping;
 	do {
-		spills.clear();
+		spilled = false;
 		mapping = std::vector<color>(v_reg);
 		auto interference = gen_graph(v_reg, code);
 		stack<reg> stk = strip(interference, n_reg, v_reg);
@@ -345,7 +345,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 				mapping[s].address = some_bit_index(free);
 			} else {
 				mapping[s].status = color::actual_spill;
-				spills.push_back(s);
+				spilled = true;
 			}
 		}
 
@@ -353,8 +353,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		auto next_v_reg = v_reg;
 		enum usage { use, def };
 		const auto ref = [&] (reg r, usage u) {
-			const auto it = std::find(spills.cbegin(), spills.cend(), r);
-			if (it != spills.cend()) {
+			if (mapping[r].status == color::actual_spill) {
 				const reg next_r = next_v_reg++;
 				const auto opcode = u == use ? instr::load_local: u == def ? instr::store_local: (__builtin_unreachable(), instr::none);
 				next_code.emplace_back(opcode, next_r, r);
@@ -412,7 +411,7 @@ std::vector<color> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 
 		code = next_code;
 		v_reg = next_v_reg;
-	} while (!spills.empty());
+	} while (spilled);
 	return mapping;
 }
 
