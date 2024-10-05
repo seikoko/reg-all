@@ -12,7 +12,6 @@ using reg = std::uint32_t;
 struct instr
 {
 	enum opcode_t {
-		none, // illegal
 		def,   // rd <- ?
 		req,   // rd -> ?
 		copy,  // rd <- rs1
@@ -169,8 +168,6 @@ graph gen_graph(reg count, std::vector<instr> const &v)
 		case instr::req:
 			use(ins.rd, i);
 			break;
-		case instr::none:
-			assert(false);
 		}
 
 	}
@@ -268,14 +265,14 @@ T stack<T>::pop()
 	return val;
 }
 
-stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
+stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 {
 	stack<reg> stk;
-	for (reg best, best_reg;;) {
-		// find min
-		best = n_reg;
-		best_reg = v_reg + 1;
-		for (reg r = 0; r < v_reg; ++r) {
+	while (true) {
+		// find min degree node
+		auto best = phys_regs;
+		reg best_reg = virt_regs + 1;
+		for (reg r = 0; r < virt_regs; ++r) {
 			if (!interference.has(r))
 				continue;
 			if (interference.degree[r] < best) {
@@ -284,13 +281,13 @@ stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
 			}
 		}
 
-		if (best_reg == v_reg + 1) break;
+		if (best_reg == virt_regs + 1) break;
 		stk.push(best_reg);
-		// TODO: potential optimization : just set interference.degree[r] = v_reg+1 so removed nodes are never selected
+		// TODO: potential optimization : just set interference.degree[r] = virt_regs+1 so removed nodes are never selected
 		interference.remove(best_reg);
 	}
 	// FIXME: this should be part of the loop above
-	for (reg r = 0; r < v_reg; ++r) {
+	for (reg r = 0; r < virt_regs; ++r) {
 		if (interference.has(r)) {
 			stk.push(r);
 		}
@@ -298,16 +295,16 @@ stack<reg> strip(graph &interference, reg n_reg, reg v_reg)
 	return stk;
 }
 
-std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
+std::vector<reg> gcolor(reg phys_regs, reg virt_regs, std::vector<instr> &code)
 {
 	bool spilled;
 	std::vector<reg> mapping;
 	do {
 		spilled = false;
-		mapping = std::vector<reg>(v_reg);
-		bitset<bool, 1> bound(v_reg);
-		auto interference = gen_graph(v_reg, code);
-		stack<reg> stk = strip(interference, n_reg, v_reg);
+		mapping = std::vector<reg>(virt_regs);
+		bitset<bool, 1> bound(virt_regs);
+		auto interference = gen_graph(virt_regs, code);
+		stack<reg> stk = strip(interference, phys_regs, virt_regs);
 
 		while (!stk.empty()) {
 			const auto s = stk.pop();
@@ -318,8 +315,8 @@ std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 				if (bound[t])
 					used |= bit(mapping[t]);
 			}
-			// equivalent of bitwise NOT when you only consider the n_reg first bits
-			const reg free = bits(n_reg) ^ used;
+			// equivalent of bitwise NOT when you only consider the phys_regs first bits
+			const reg free = bits(phys_regs) ^ used;
 			bound.set(s, !!free);
 			if (free) {
 				// TODO: use some form of heuristic
@@ -330,11 +327,11 @@ std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 		}
 
 		std::vector<instr> next_code;
-		auto next_v_reg = v_reg;
+		auto next_virt_regs = virt_regs;
 		enum usage { use, def };
 		const auto ref = [&] (reg r, usage u) {
 			if (!bound[r]) {
-				const reg next_r = next_v_reg++;
+				const reg next_r = next_virt_regs++;
 				static_assert(instr::load_local + 1 == instr::store_local);
 				const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
 				next_code.emplace_back(opcode, next_r, r);
@@ -342,56 +339,52 @@ std::vector<reg> gcolor(reg n_reg, reg v_reg, std::vector<instr> &code)
 			}
 			return r;
 		};
-		for (const auto ins : code) {
-			reg rd = ins.rd;
-			reg rs1 = ins.rs1;
-			reg rs2 = ins.rs2;
-			instr *patchme;
+
+		for (auto ins : code) {
 			// force patchme to be valid during the iteration
 			next_code.reserve(next_code.size() + 4);
 			switch (ins.opcode) {
+				instr *patchme;
 			case instr::def:
 			case instr::imm:
 				patchme = &next_code.emplace_back(ins);
-				patchme->rd = ref(rd, def);
+				patchme->rd = ref(ins.rd, def);
 				break;
 			case instr::req:
-				rd = ref(rd, use);
-				next_code.emplace_back(ins.opcode, rd);
+				ins.rd = ref(ins.rd, use);
+				next_code.emplace_back(ins);
 				break;
 			case instr::copy:
 			case instr::load:
-				rs1 = ref(rs1, use);
-				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
-				patchme->rd = ref(rd, def);
+				ins.rs1 = ref(ins.rs1, use);
+				patchme = &next_code.emplace_back(ins);
+				patchme->rd = ref(ins.rd, def);
 				break;
 			case instr::add:
-				rs1 = ref(rs1, use);
-				rs2 = ref(rs2, use);
-				patchme = &next_code.emplace_back(ins.opcode, rd, rs1, rs2);
-				patchme->rd = ref(rd, def);
+				ins.rs1 = ref(ins.rs1, use);
+				ins.rs2 = ref(ins.rs2, use);
+				patchme = &next_code.emplace_back(ins);
+				patchme->rd = ref(ins.rd, def);
 				break;
 			case instr::store:
-				rs1 = ref(rs1, use);
-				rd  = ref(rd , use);
-				next_code.emplace_back(ins.opcode, rd, rs1);
+				ins.rs1 = ref(ins.rs1, use);
+				ins.rd  = ref(ins.rd , use);
+				next_code.emplace_back(ins);
 				break;
 			case instr::load_local:
 				// maybe could delete the variable if this is executed
-				patchme = &next_code.emplace_back(ins.opcode, rd, rs1);
-				patchme->rd = ref(rd, def);
+				patchme = &next_code.emplace_back(ins);
+				patchme->rd = ref(ins.rd, def);
 				break;
 			case instr::store_local:
-				rd = ref(rd, use);
-				next_code.emplace_back(ins.opcode, rd, rs1);
+				ins.rd = ref(ins.rd, use);
+				next_code.emplace_back(ins);
 				break;
-			case instr::none:
-				assert(false);
 			}
 		}
 
 		code = next_code;
-		v_reg = next_v_reg;
+		virt_regs = next_virt_regs;
 	} while (spilled);
 	return mapping;
 }
