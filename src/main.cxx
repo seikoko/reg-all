@@ -223,19 +223,25 @@ T stack<T>::pop()
 
 struct code_t : public std::vector<instr>
 {
-	reg regs;
+	reg phys_regs;
+	reg virt_regs;
+
+	reg regs() const { return phys_regs + virt_regs; }
 };
 
 graph gen_graph(code_t const &code)
 {
-	graph g(code.regs);
+	// first registers correspond to the physical registers and all interfere with each other
+	// currently instructions must not refer to physical registers directly
+	graph g(code.regs());
 	// [definition, last use)
 	std::vector<std::pair<reg, reg>> live;
-	for (reg r = 0; r < code.regs; ++r) {
+	for (reg r = 0; r < code.virt_regs; ++r) {
 		live.emplace_back(reg(-1), reg(0));
 	}
-	const auto use = [&] (reg r, reg index) { if (live[r].second < index) live[r].second = index; };
-	const auto def = [&] (reg r, reg index) { if (live[r].first  > index) live[r].first  = index; };
+	const auto idx = [&] (reg i) -> auto&   { return assert(i >= code.phys_regs), live[i - code.phys_regs]; };
+	const auto use = [&] (reg r, reg index) { if (idx(r).second < index) idx(r).second = index; };
+	const auto def = [&] (reg r, reg index) { if (idx(r).first  > index) idx(r).first  = index; };
 	for (reg i = 0; i < code.size(); ++i) {
 		const auto ins = code[i];
 		switch (ins.opcode) {
@@ -264,12 +270,19 @@ graph gen_graph(code_t const &code)
 		}
 
 	}
-	for (reg r = 0; r < code.regs; ++r) {
+	for (reg r = 0; r < code.virt_regs; ++r) {
 		assert(live[r].second != 0 || live[r].first == reg(-1));
 	}
-	for (reg t = 1; t < code.regs; ++t) {
+	// render physical registers
+	for (reg t = 1; t < code.phys_regs; ++t) {
 		for (reg s = 0; s < t; ++s) {
-			bool overlap = live[s].first < live[t].second && live[t].first < live[s].second;
+			g.link(s, t);
+		}
+	}
+	// render virtual registers' interference
+	for (reg t = code.phys_regs + 1; t < code.regs(); ++t) {
+		for (reg s = code.phys_regs; s < t; ++s) {
+			bool overlap = idx(s).first < idx(t).second && idx(t).first < idx(s).second;
 			if (overlap) {
 				g.link(s, t);
 			}
@@ -284,12 +297,12 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 	while (true) {
 		// find any node of insignificant degree
 		// default with an impossible value
-		reg chosen_reg = virt_regs + 1;
+		reg chosen_reg = static_cast<reg>(interference.order());
 		// else find a node to spill
 		// here the heuristic selects the max degree
 		// it could be more sophisticated
 		reg max_deg = 0;
-		for (reg r = 0; r < virt_regs; ++r) {
+		for (reg r = phys_regs; r < interference.order(); ++r) {
 			if (!interference.has(r))
 				continue;
 			const auto deg = interference.degree[r];
@@ -301,7 +314,7 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 				max_deg = deg;
 			}
 		}
-		if (chosen_reg == virt_regs + 1) break;
+		if (chosen_reg == interference.order()) break;
 		stk.push(chosen_reg);
 		// TODO: potential optimization : just set interference.degree[r] = virt_regs+1 so removed nodes are never selected
 		interference.remove(chosen_reg);
@@ -311,7 +324,11 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 
 std::vector<reg> select(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
 {
-	auto mapping = std::vector<reg>(virt_regs);
+	auto mapping = std::vector<reg>(interference.order());
+	for (reg phys = 0; phys < phys_regs; ++phys) {
+		mapping[phys] = phys;
+		bound.set(phys, true);
+	}
 	while (!stk.empty()) {
 		const auto s = stk.pop();
 		// represents a mask of neighboring registers in use
@@ -335,11 +352,12 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg virt_regs
 
 code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 {
-	code_t next_code = { {}, code.regs };
+	code_t next_code = { {}, code.phys_regs, code.virt_regs };
 	enum usage { use, def };
 	const auto ref = [&] (reg r, usage u) {
+		assert(r >= code.phys_regs);
 		if (!bound[r]) {
-			const reg next_r = next_code.regs++;
+			const reg next_r = next_code.phys_regs + next_code.virt_regs++;
 			static_assert(instr::load_local + 1 == instr::store_local);
 			const auto opcode = static_cast<instr::opcode_t>(instr::load_local + (u == def));
 			next_code.emplace_back(opcode, next_r, r);
@@ -393,17 +411,47 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 	return next_code;
 }
 
-std::vector<reg> gcolor(reg phys_regs, code_t &code)
+void remap(code_t &code, std::vector<reg> const &mapping)
 {
+	for (auto &ins : code) {
+		switch (ins.opcode) {
+		case instr::add:
+			ins.rs2 = mapping[ins.rs2];
+			// fallthrough
+		case instr::copy:
+		case instr::load:
+		case instr::store:
+			ins.rs1 = mapping[ins.rs1];
+			// fallthrough
+		case instr::def:
+		case instr::req:
+		case instr::imm:
+		case instr::load_local:
+		case instr::store_local:
+			ins.rd  = mapping[ins.rd ];
+			break;
+		}
+	}
+}
+
+std::vector<reg> gcolor(code_t &code)
+{
+	std::vector<reg> offsets(code.virt_regs);
+	for (reg r = 0; r < offsets.size(); ++r) {
+		offsets[r] = r + code.phys_regs;
+	}
+	remap(code, offsets);
 	while (true) {
 		auto interference = gen_graph(code);
-		stack<reg> stk = strip(interference, phys_regs, code.regs);
+		stack<reg> stk = strip(interference, code.phys_regs, code.virt_regs);
 		bool spilled = false;
-		bitset<bool, 1> bound(code.regs);
-		const auto mapping = select(interference, std::move(stk), code.regs, phys_regs, &spilled, bound);
+		bitset<bool, 1> bound(code.regs());
+		const auto mapping = select(interference, std::move(stk), code.virt_regs, code.phys_regs, &spilled, bound);
 		code = rewrite(code, bound);
-		if (!spilled)
+		if (!spilled) {
+			remap(code, mapping);
 			return mapping;
+		}
 	}
 }
 
@@ -427,12 +475,11 @@ int main()
 			{ instr::req , 8 },
 			{ instr::req , 7 },
 		},
-		10
+		4,
+		10,
 	};
 	std::cout << code;
-	auto g = gen_graph(code);
-	std::cout << g;
-	auto m = gcolor(4, code);
+	auto m = gcolor(code);
 	std::cout << code;
 	std::cout << m;
 	return 0;
