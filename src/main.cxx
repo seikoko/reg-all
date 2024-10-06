@@ -242,11 +242,13 @@ graph gen_graph(code_t const &code)
 	const auto idx = [&] (reg i) -> auto&   { return assert(i >= code.phys_regs), live[i - code.phys_regs]; };
 	const auto use = [&] (reg r, reg index) { if (idx(r).second < index) idx(r).second = index; };
 	const auto def = [&] (reg r, reg index) { if (idx(r).first  > index) idx(r).first  = index; };
+	const auto clobber = [&] (reg virt, reg phys) { g.link(virt, phys); };
 	for (reg i = 0; i < code.size(); ++i) {
 		const auto ins = code[i];
 		switch (ins.opcode) {
 		case instr::add:
 			use(ins.rs2, i);
+			clobber(ins.rd, 0);
 			// fallthrough
 		case instr::copy:
 		case instr::load:
