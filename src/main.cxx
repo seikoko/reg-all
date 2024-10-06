@@ -235,7 +235,7 @@ graph gen_graph(code_t const &code)
 	// currently instructions must not refer to physical registers directly
 	// TODO: allow instructions to refer to phys registers
 	// enabling `mul v0, v1, v2;`
-	// to transform into `clobber edx; mov eax, v1; mul v2; mov v0, eax`
+	// to transform into `clobber v0, edx; copy eax, v1; mul eax, eax, v2; copy v0, eax`
 	graph g(code.regs());
 	// [definition, last use)
 	std::vector<std::pair<reg, reg>> live;
@@ -246,6 +246,7 @@ graph gen_graph(code_t const &code)
 	const auto use = [&] (reg r, reg index) { if (idx(r).second < index) idx(r).second = index; };
 	const auto def = [&] (reg r, reg index) { if (idx(r).first  > index) idx(r).first  = index; };
 	const auto clobber = [&] (reg virt, reg phys) { g.link(virt, phys); };
+
 	for (reg i = 0; i < code.size(); ++i) {
 		const auto ins = code[i];
 		switch (ins.opcode) {
@@ -278,6 +279,7 @@ graph gen_graph(code_t const &code)
 	for (reg r = 0; r < code.virt_regs; ++r) {
 		assert(live[r].second != 0 || live[r].first == reg(-1));
 	}
+
 	// render physical registers
 	for (reg t = 1; t < code.phys_regs; ++t) {
 		for (reg s = 0; s < t; ++s) {
@@ -296,7 +298,7 @@ graph gen_graph(code_t const &code)
 	return g;
 }
 
-stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
+stack<reg> strip(graph &interference, reg phys_regs)
 {
 	stack<reg> stk;
 	while (true) {
@@ -327,7 +329,7 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 	return stk;
 }
 
-std::vector<reg> select(graph const &interference, stack<reg> stk, reg virt_regs, reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
+std::vector<reg> select(graph const &interference, stack<reg> stk, reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
 {
 	auto mapping = std::vector<reg>(interference.order());
 	for (reg phys = 0; phys < phys_regs; ++phys) {
@@ -448,10 +450,10 @@ std::vector<reg> gcolor(code_t &code)
 	remap(code, offsets);
 	while (true) {
 		auto interference = gen_graph(code);
-		stack<reg> stk = strip(interference, code.phys_regs, code.virt_regs);
+		stack<reg> stk = strip(interference, code.phys_regs);
 		bool spilled = false;
 		bitset<bool, 1> bound(code.regs());
-		const auto mapping = select(interference, std::move(stk), code.virt_regs, code.phys_regs, &spilled, bound);
+		const auto mapping = select(interference, std::move(stk), code.phys_regs, &spilled, bound);
 		code = rewrite(code, bound);
 		if (!spilled) {
 			remap(code, mapping);
