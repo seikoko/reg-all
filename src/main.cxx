@@ -233,6 +233,9 @@ graph gen_graph(code_t const &code)
 {
 	// first registers correspond to the physical registers and all interfere with each other
 	// currently instructions must not refer to physical registers directly
+	// TODO: allow instructions to refer to phys registers
+	// enabling `mul v0, v1, v2;`
+	// to transform into `clobber edx; mov eax, v1; mul v2; mov v0, eax`
 	graph g(code.regs());
 	// [definition, last use)
 	std::vector<std::pair<reg, reg>> live;
