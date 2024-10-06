@@ -104,11 +104,19 @@ struct graph
 	void link(reg s, reg t);
 	void remove(reg s);
 	bool has(reg s) const;
+	size_t order() const;
 };
 
 graph::graph(reg count)
 	: ladj(count), degree(count), removed(count)
 {
+}
+
+size_t graph::order() const
+{
+	assert(degree.size() == ladj.size());
+	assert(removed.elems == ladj.size());
+	return ladj.size();
 }
 
 void graph::link(reg s, reg t)
@@ -172,7 +180,7 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 
 std::ostream &operator<<(std::ostream &os, graph const &g)
 {
-	for (reg r = 0; r < g.ladj.size(); ++r) {
+	for (reg r = 0; r < g.order(); ++r) {
 		os << r << "(" << g.degree[r] << "): ";
 		bool first = true;
 		if (g.has(r)) for (auto t : g.ladj[r]) {
@@ -275,6 +283,7 @@ stack<reg> strip(graph &interference, reg phys_regs, reg virt_regs)
 	stack<reg> stk;
 	while (true) {
 		// find any node of insignificant degree
+		// default with an impossible value
 		reg chosen_reg = virt_regs + 1;
 		// else find a node to spill
 		// here the heuristic selects the max degree
@@ -306,8 +315,8 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg virt_regs
 	while (!stk.empty()) {
 		const auto s = stk.pop();
 		// represents a mask of neighboring registers in use
-		// TODO: should be a bitset
 		reg used = 0;
+		assert(sizeof(used) * CHAR_BIT >= phys_regs);
 		for (const auto t : interference.ladj[s]) {
 			if (bound[t])
 				used |= bit(mapping[t]);
