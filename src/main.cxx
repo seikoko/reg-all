@@ -95,50 +95,65 @@ void bitset<T, bits>::set(unit i, T value)
 
 struct graph
 {
-	std::vector<std::vector<reg>> ladj;
+	bitset<bool, 1> madj;
 	std::vector<reg> degree;
 	bitset<bool, 1> removed;
 
 	graph(reg count);
 
 	void link(reg s, reg t);
+	bool linked(reg s, reg t) const;
 	void remove(reg s);
 	bool has(reg s) const;
-	size_t order() const;
+	reg order() const;
+	reg index(reg s, reg t) const;
+	reg deg(reg s) const;
 };
 
 graph::graph(reg count)
-	: ladj(count), degree(count), removed(count)
+	: madj(count * count), degree(count), removed(count)
 {
 }
 
-size_t graph::order() const
+reg graph::order() const
 {
-	assert(degree.size() == ladj.size());
-	assert(removed.elems == ladj.size());
-	return ladj.size();
+	return removed.elems;
 }
 
 void graph::link(reg s, reg t)
 {
-	if (s > t) std::swap(s, t);
-	ladj[s].push_back(t);
-	ladj[t].push_back(s);
+	madj.set(index(s, t), true);
+	madj.set(index(t, s), true);
 	degree[s]++;
 	degree[t]++;
+}
+
+bool graph::linked(reg s, reg t) const
+{
+	return madj[index(s, t)];
 }
 
 void graph::remove(reg s)
 {
 	removed.set(s, true);
-	for (const auto t : ladj[s]) {
-		degree[t]--;
+	for (reg t = 0; t < order(); ++t) {
+		degree[t] -= madj[index(s, t)];
 	}
 }
 
 bool graph::has(reg s) const
 {
 	return !removed[s];
+}
+
+reg graph::index(reg s, reg t) const
+{
+	return s * order() + t;
+}
+
+reg graph::deg(reg s) const
+{
+	return degree[s];
 }
 
 template <typename T>
@@ -181,10 +196,10 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 std::ostream &operator<<(std::ostream &os, graph const &g)
 {
 	for (reg r = 0; r < g.order(); ++r) {
-		os << r << "(" << g.degree[r] << "): ";
+		os << r << "(" << g.deg(r) << "): ";
 		bool first = true;
-		if (g.has(r)) for (auto t : g.ladj[r]) {
-			if (!g.has(t))
+		if (g.has(r)) for (reg t = 0; t < g.order(); ++t) {
+			if (!g.linked(r, t) || !g.has(t))
 				continue;
 			if (first) {
 				first = false;
@@ -312,7 +327,7 @@ stack<reg> strip(graph &interference, reg phys_regs)
 		for (reg r = phys_regs; r < interference.order(); ++r) {
 			if (!interference.has(r))
 				continue;
-			const auto deg = interference.degree[r];
+			const auto deg = interference.deg(r);
 			if (deg < phys_regs) {
 				chosen_reg = r;
 				break;
@@ -323,7 +338,7 @@ stack<reg> strip(graph &interference, reg phys_regs)
 		}
 		if (chosen_reg == interference.order()) break;
 		stk.push(chosen_reg);
-		// TODO: potential optimization : just set interference.degree[r] = virt_regs+1 so removed nodes are never selected
+		// TODO: potential optimization : just set interference.deg(r) = virt_regs+1 so removed nodes are never selected
 		interference.remove(chosen_reg);
 	}
 	return stk;
@@ -341,9 +356,10 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg phys_regs
 		// represents a mask of free neighboring registers
 		reg free = bits(phys_regs);
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
-		for (const auto t : interference.ladj[s]) {
+		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
-			free &= ~(reg(bound[t]) << mapping[t]);
+			auto is_mapped = interference.linked(s, t) & bound[t];
+			free &= ~(reg(is_mapped) << mapping[t]);
 		}
 		bound.set(s, !!free);
 		if (free) {
