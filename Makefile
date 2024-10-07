@@ -14,9 +14,10 @@ ifeq ($(DEBUG),1)
 	CFLAGS += -Og
 	LDFLAGS +=
 else
-	CXXFLAGS += -O2
-	CFLAGS += -O2
+	CXXFLAGS += -O3
+	CFLAGS += -O3
 	LDFLAGS +=
+	CPPFLAGS += -DNDEBUG
 endif
 
 ifeq ($(SAN),1)
@@ -31,10 +32,10 @@ CXXOBJ = $(patsubst ./src/%.cxx,bin/%.cxx.o,$(CXXFILES))
 COBJ   = $(patsubst ./src/%.c,bin/%.c.o,$(CFILES))
 
 bin/%.cxx.o: src/%.cxx
-	$(CXX) -c -o $@ $< $(CXXFLAGS)
+	$(CXX) -c -o $@ $< $(CPPFLAGS) $(CXXFLAGS)
 
 bin/%.c.o: src/%.c
-	$(CC) -c -o $@ $< $(CFLAGS)
+	$(CC) -c -o $@ $< $(CPPFLAGS) $(CFLAGS)
 
 main: $(CXXOBJ) $(COBJ)
 	$(LD) -o $@ $^ $(LDFLAGS)

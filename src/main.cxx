@@ -45,7 +45,7 @@ reg some_bit_index(reg r)
 reg bit(reg r)
 {
 	assert(r < CHAR_BIT * sizeof r);
-	return reg{1} << (r % (CHAR_BIT * sizeof r));
+	return reg{1} << r;
 }
 
 reg bits(reg r)
