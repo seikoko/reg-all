@@ -338,18 +338,17 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg phys_regs
 	}
 	while (!stk.empty()) {
 		const auto s = stk.pop();
-		// represents a mask of neighboring registers in use
-		reg used = 0;
-		assert(sizeof(used) * CHAR_BIT >= phys_regs);
+		// represents a mask of free neighboring registers
+		reg free = bits(phys_regs);
+		assert(sizeof(free) * CHAR_BIT >= phys_regs);
 		for (const auto t : interference.ladj[s]) {
-			if (bound[t])
-				used |= bit(mapping[t]);
+			// clears a bit corresponding to a register that is already mapped
+			free &= ~(reg(bound[t]) << mapping[t]);
 		}
-		// equivalent of bitwise NOT when you only consider the phys_regs first bits
-		const reg free = bits(phys_regs) ^ used;
 		bound.set(s, !!free);
 		if (free) {
 			mapping[s] = some_bit_index(free);
+			assert(mapping[s] < CHAR_BIT * sizeof(reg));
 		} else {
 			*spilled = true;
 		}
