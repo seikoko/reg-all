@@ -64,6 +64,7 @@ struct bitset
 	bitset(unit elems);
 	T operator[](unit i) const;
 	void set(unit i, T value);
+	unit popcount() const;
 
 	std::vector<unit> data;
 	unit elems;
@@ -93,11 +94,22 @@ void bitset<T, bits>::set(unit i, T value)
 	data[i * bits / unit_bits] |=  msk & static_cast<unit>(value << (i * bits % unit_bits));
 }
 
+template <typename T, size_t bits>
+typename bitset<T, bits>::unit bitset<T, bits>::popcount() const
+{
+	unit count = 0;
+	for (auto elem : data) {
+		count += __builtin_popcount(elem);
+	}
+	return count;
+}
+
 struct graph
 {
 	bitset<bool, 1> madj;
 	std::vector<reg> degree;
 	bitset<bool, 1> removed;
+	std::vector<std::pair<reg, reg>> moves;
 
 	graph(reg count);
 
@@ -265,11 +277,16 @@ graph gen_graph(code_t const &code)
 	for (reg i = 0; i < code.size(); ++i) {
 		const auto ins = code[i];
 		switch (ins.opcode) {
+		case instr::copy:
+			use(ins.rs1, i);
+			use(ins.rd , i);
+			def(ins.rd , i);
+			g.moves.emplace_back(ins.rd, ins.rs1);
+			break;
 		case instr::add:
 			use(ins.rs2, i);
 			clobber(ins.rd, 0);
 			// fallthrough
-		case instr::copy:
 		case instr::load:
 			use(ins.rs1, i);
 			// fallthrough
@@ -344,6 +361,29 @@ stack<reg> strip(graph &interference, reg phys_regs)
 	return stk;
 }
 
+void remap(code_t &code, std::vector<reg> const &mapping)
+{
+	for (auto &ins : code) {
+		switch (ins.opcode) {
+		case instr::add:
+			ins.rs2 = mapping[ins.rs2];
+			// fallthrough
+		case instr::copy:
+		case instr::load:
+		case instr::store:
+			ins.rs1 = mapping[ins.rs1];
+			// fallthrough
+		case instr::def:
+		case instr::req:
+		case instr::imm:
+		case instr::load_local:
+		case instr::store_local:
+			ins.rd  = mapping[ins.rd ];
+			break;
+		}
+	}
+}
+
 std::vector<reg> select(graph const &interference, stack<reg> stk, reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
 {
 	auto mapping = std::vector<reg>(interference.order());
@@ -358,6 +398,7 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg phys_regs
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
 		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
+			// TODO: easily vectorizable
 			auto is_mapped = interference.linked(s, t) & bound[t];
 			free &= ~(reg(is_mapped) << mapping[t]);
 		}
@@ -431,29 +472,6 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 		}
 	}
 	return next_code;
-}
-
-void remap(code_t &code, std::vector<reg> const &mapping)
-{
-	for (auto &ins : code) {
-		switch (ins.opcode) {
-		case instr::add:
-			ins.rs2 = mapping[ins.rs2];
-			// fallthrough
-		case instr::copy:
-		case instr::load:
-		case instr::store:
-			ins.rs1 = mapping[ins.rs1];
-			// fallthrough
-		case instr::def:
-		case instr::req:
-		case instr::imm:
-		case instr::load_local:
-		case instr::store_local:
-			ins.rd  = mapping[ins.rd ];
-			break;
-		}
-	}
 }
 
 std::vector<reg> gcolor(code_t &code)
