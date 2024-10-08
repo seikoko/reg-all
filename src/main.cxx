@@ -70,6 +70,18 @@ struct bitset
 	unit elems;
 };
 
+// TODO: easily vectorizable
+template <typename T, size_t bits>
+bitset<T, bits> operator&(bitset<T, bits> const &lhs, bitset<T, bits> const &rhs)
+{
+	assert(lhs.elems == rhs.elems);
+	bitset<T, bits> res(lhs.elems);
+	for (size_t i = 0; i < lhs.data.size(); ++i) {
+		res.data[i] = lhs.data[i] & rhs.data[i];
+	}
+	return res;
+}
+
 template <typename T, size_t bits>
 bitset<T, bits>::bitset(unit elems)
 	: elems(elems)
@@ -106,7 +118,7 @@ typename bitset<T, bits>::unit bitset<T, bits>::popcount() const
 
 struct graph
 {
-	bitset<bool, 1> madj;
+	std::vector<bitset<bool, 1>> madj;
 	std::vector<reg> degree;
 	bitset<bool, 1> removed;
 	std::vector<std::pair<reg, reg>> moves;
@@ -118,12 +130,11 @@ struct graph
 	void remove(reg s);
 	bool has(reg s) const;
 	reg order() const;
-	reg index(reg s, reg t) const;
 	reg deg(reg s) const;
 };
 
 graph::graph(reg count)
-	: madj(count * count), degree(count), removed(count)
+	: madj(count, count), degree(count), removed(count)
 {
 }
 
@@ -134,33 +145,28 @@ reg graph::order() const
 
 void graph::link(reg s, reg t)
 {
-	madj.set(index(s, t), true);
-	madj.set(index(t, s), true);
+	madj[s].set(t, true);
+	madj[t].set(s, true);
 	degree[s]++;
 	degree[t]++;
 }
 
 bool graph::linked(reg s, reg t) const
 {
-	return madj[index(s, t)];
+	return madj[s][t];
 }
 
 void graph::remove(reg s)
 {
 	removed.set(s, true);
 	for (reg t = 0; t < order(); ++t) {
-		degree[t] -= madj[index(s, t)];
+		degree[t] -= madj[s][t];
 	}
 }
 
 bool graph::has(reg s) const
 {
 	return !removed[s];
-}
-
-reg graph::index(reg s, reg t) const
-{
-	return s * order() + t;
 }
 
 reg graph::deg(reg s) const
@@ -396,11 +402,10 @@ std::vector<reg> select(graph const &interference, stack<reg> stk, reg phys_regs
 		// represents a mask of free neighboring registers
 		reg free = bits(phys_regs);
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
+		auto is_mapped = interference.madj[s] & bound;
 		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
-			// TODO: easily vectorizable
-			auto is_mapped = interference.linked(s, t) & bound[t];
-			free &= ~(reg(is_mapped) << mapping[t]);
+			free &= ~(reg(is_mapped[t]) << mapping[t]);
 		}
 		bound.set(s, !!free);
 		if (free) {
