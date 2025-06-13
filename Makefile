@@ -10,8 +10,8 @@ CFLAGS = $(COMMON_FLAGS)
 LDFLAGS =
 
 ifeq ($(DEBUG),1)
-	CXXFLAGS += -Og
-	CFLAGS += -Og
+	CXXFLAGS += -O0
+	CFLAGS += -O0
 	LDFLAGS +=
 else
 	CXXFLAGS += -O3
