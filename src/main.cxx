@@ -331,9 +331,9 @@ graph gen_graph(code_t const &code)
 	for (reg r = 0; r < code.virt_regs; ++r) {
 		live.emplace_back(reg(-1), reg(0));
 	}
-	const auto idx = [&] (reg i) -> auto&   { return assert(i >= code.phys_regs), live[i - code.phys_regs]; };
-	const auto use = [&] (reg r, reg index) { if (idx(r).second < index) idx(r).second = index; };
-	const auto def = [&] (reg r, reg index) { if (idx(r).first  > index) idx(r).first  = index; };
+	const auto idx = [&] (reg i) -> auto&   { return live[i - code.phys_regs]; };
+	const auto use = [&] (reg r, reg index) { if (r >= code.phys_regs && idx(r).second < index) idx(r).second = index; };
+	const auto def = [&] (reg r, reg index) { if (r >= code.phys_regs && idx(r).first  > index) idx(r).first  = index; };
 	const auto clobber = [&] (reg virt, reg phys) { g.link(virt, phys, graph::I_NONMOVE); };
 
 	for (reg i = 0; i < code.size(); ++i) {
@@ -349,7 +349,6 @@ graph gen_graph(code_t const &code)
 			break;
 		case instr::add:
 			use(ins.rs2, i);
-			// clobber(ins.rd, 0);
 			// fallthrough
 		case instr::load:
 			use(ins.rs1, i);
@@ -371,9 +370,6 @@ graph gen_graph(code_t const &code)
 			break;
 		}
 
-	}
-	for (reg r = 0; r < code.virt_regs; ++r) {
-		assert(live[r].second != 0 || live[r].first == reg(-1));
 	}
 
 	// render physical registers
@@ -625,10 +621,6 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 std::vector<reg> gcolor(code_t &code)
 {
 	std::vector<reg> offsets(code.virt_regs);
-	for (reg r = 0; r < offsets.size(); ++r) {
-		offsets[r] = r + code.phys_regs;
-	}
-	remap(code, offsets);
 	while (true) {
 		auto interference = gen_graph(code);
 		stack<reg> stk;
@@ -659,24 +651,25 @@ std::vector<reg> gcolor(code_t &code)
 int main()
 {
 
+	enum { a = 0xa, b, c, d, e, f };
 #if 1
 	code_t code{
 		{
-			{ instr::def , 8 },
-			{ instr::def , 7 },
-			{ instr::load, 5, 7 },
-			{ instr::add , 6, 8, 5 },
-			{ instr::add , 4, 5, 6 },
-			{ instr::load, 3, 7 },
-			{ instr::load, 9, 7 },
-			{ instr::load, 0, 4 },
-			{ instr::add , 1, 3, 0 },
-			{ instr::copy, 2, 1 },
-			{ instr::add , 8, 9, 2 },
-			{ instr::copy, 7, 0 },
-			{ instr::req , 2 },
-			{ instr::req , 8 },
-			{ instr::req , 7 },
+			{ instr::def , c },
+			{ instr::def , b },
+			{ instr::load, 9, b },
+			{ instr::add , a, c, 9 },
+			{ instr::add , 8, 9, a },
+			{ instr::load, 7, b },
+			{ instr::load, d, b },
+			{ instr::load, 4, 8 },
+			{ instr::add , 5, 8, 4 },
+			{ instr::copy, 6, 5 },
+			{ instr::add , c, d, 6 },
+			{ instr::copy, b, 4 },
+			{ instr::req , 6 },
+			{ instr::req , c },
+			{ instr::req , b },
 		},
 		4,
 		10,
