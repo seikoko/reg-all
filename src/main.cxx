@@ -7,6 +7,28 @@
 #include <vector>
 #include <cstdint>
 
+/*
+ *
+ * Graph Coloring for Register Allocation
+ *
+ * Algorithm explained in the book "modern compiler implementation in C"
+ * 	by Andrew W. Appel
+ *
+ * Not a 1:1 mapping because I only followed the explanations,
+ * 	not the implementation and the decisions that came with it.
+ * All data structures are thus not necessarily using the best known
+ * 	representation, just what made the most sense to me at conception.
+ *
+ * This code was intended to be plugged in a compiler project of mine
+ * 	however with the time that passed I feel like I would rather make a
+ * 	new one from scratch and so this would also see modifications
+ * 	most likely in the API to be more flexible with lowered instructions
+ * 	since we want to go from a universal bytecode to an architecture-
+ * 	aware bytecode, and also eventually supporting allocations for
+ * 	different types (i8-i64, f32-f64, struct, simd vectors, etc)
+ *
+ */
+
 using reg = std::uint32_t;
 
 struct instr
@@ -38,6 +60,9 @@ reg ctz(reg r)
 	return __builtin_ctz(r);
 }
 
+// This function is called with a mask of 'free' registers and
+// 	selects any of them. This is a customization point where
+// 	a different heuristic could be used
 reg some_bit_index(reg r)
 {
 	return ctz(lsb(r));
