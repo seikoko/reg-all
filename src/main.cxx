@@ -614,40 +614,28 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 		next_code.reserve(next_code.size() + 4);
 		switch (ins.opcode) {
 			instr *patchme;
-		case instr::def:
-		case instr::imm:
-			patchme = &next_code.emplace_back(ins);
-			patchme->rd = ref(ins.rd, def);
-			break;
-		case instr::req:
-			ins.rd = ref(ins.rd, use);
-			next_code.emplace_back(ins);
-			break;
+
+		case instr::add:
+		case instr::umul:
+			ins.rs2 = ref(ins.rs2, use);
+			// fallthrough
 		case instr::copy:
 		case instr::load:
 			ins.rs1 = ref(ins.rs1, use);
+			// fallthrough
+		case instr::def:
+		case instr::imm:
+		case instr::load_local:
 			patchme = &next_code.emplace_back(ins);
 			patchme->rd = ref(ins.rd, def);
 			break;
-		case instr::add:
-		case instr::umul:
-			ins.rs1 = ref(ins.rs1, use);
-			ins.rs2 = ref(ins.rs2, use);
-			patchme = &next_code.emplace_back(ins);
-			patchme->rd = ref(ins.rd, def);
-			break;
+
 		case instr::store:
 			ins.rs1 = ref(ins.rs1, use);
-			ins.rd  = ref(ins.rd , use);
-			next_code.emplace_back(ins);
-			break;
-		case instr::load_local:
-			// maybe could delete the variable if this is executed
-			patchme = &next_code.emplace_back(ins);
-			patchme->rd = ref(ins.rd, def);
-			break;
+			// fallthrough
 		case instr::store_local:
-			ins.rd = ref(ins.rd, use);
+		case instr::req:
+			ins.rd  = ref(ins.rd , use);
 			next_code.emplace_back(ins);
 			break;
 		}
