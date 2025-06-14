@@ -21,6 +21,7 @@ struct instr
 		store_local, // rd -> local_#rs1 // TODO: imm1[fp] <- rs2
 		add,   // rd <- rs1 + rs2
 		imm,   // rd <- #rs1 // rd <- imm1
+		umul,  // rd <- rs1 * rs2
 	} opcode;
 	reg rd ;
 	reg rs1; // imm1
@@ -272,6 +273,8 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 		return os << "store R." << ins.rd << ", [R." << ins.rs1 << "]";
 	case instr::add:
 		return os << "add   R." << ins.rd << ", R." << ins.rs1 << ", R." << ins.rs2;
+	case instr::umul:
+		return os << "umul  R." << ins.rd << ", R." << ins.rs1 << ", R." << ins.rs2;
 	case instr::imm:
 		return os << "imm   R." << ins.rd << ", #" << ins.rs1;
 	case instr::load_local:
@@ -334,13 +337,17 @@ struct code_t : public std::vector<instr>
 	reg regs() const { return phys_regs + virt_regs; }
 };
 
-graph gen_graph(code_t const &code)
+graph gen_graph(code_t &code)
 {
 	// first registers correspond to the physical registers and all interfere with each other
-	// currently instructions must not refer to physical registers directly
-	// TODO: allow instructions to refer to phys registers
-	// enabling `mul v0, v1, v2;`
-	// to transform into `clobber v0, edx; copy eax, v1; mul eax, eax, v2; copy v0, eax`
+	// when strictly necessary, instructions can address physical registers
+	// this lets you allocate once you know the target platform
+	// for instance on x86-64 unsigned multiply is MUL %eax, %eax, r/m32 [clobbers %edx]
+	// this also useful for calling conventions,
+	// if parameters are r0, r1, r2, and return value in r3, r4,
+	// you can allocate them seamlessly with
+	// copy r0, %edi; copy r1, %esi; copy r2, %edx;
+	// copy %eax, r3; copy %edx, r4;
 	graph g(code.regs());
 	// [definition, last use)
 	std::vector<std::pair<reg, reg>> live;
@@ -369,7 +376,6 @@ graph gen_graph(code_t const &code)
 		case instr::load:
 			use(ins.rs1, i);
 			// fallthrough
-		case instr::def:
 		case instr::imm:
 		case instr::load_local:
 			use(ins.rd, i);
@@ -381,8 +387,28 @@ graph gen_graph(code_t const &code)
 		case instr::store_local:
 			use(ins.rd, i);
 			break;
-		case instr::req:
+		case instr::def:
 			use(ins.rd, i);
+			def(ins.rd, 0);
+			break;
+		case instr::req:
+			use(ins.rd, reg(-1));
+			break;
+		case instr::umul:
+			// for fun, the result is stored in r0:r2
+			// so rd = rs1 * rs2
+			// expands to
+			// r2 = copy rs1
+			// r2 *= rs2 [r0 clobbered]
+			// rd = copy r2
+			if (ins.rd != 2) {
+			clobber(ins.rd, 0);
+			code.insert(code.begin() + i, 2, instr{});
+			code[i+0] = instr{ instr::copy, 2, ins.rs1 };
+			code[i+1] = instr{ instr::umul, 2, 2, ins.rs2 };
+			use(ins.rs2, i+1);
+			code[i+2] = instr{ instr::copy, ins.rd, 2 };
+			}
 			break;
 		}
 
@@ -441,6 +467,7 @@ void remap(code_t &code, std::vector<reg> const &mapping)
 	for (auto &ins : code) {
 		switch (ins.opcode) {
 		case instr::add:
+		case instr::umul:
 			ins.rs2 = mapping[ins.rs2];
 			// fallthrough
 		case instr::copy:
@@ -603,6 +630,7 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 			patchme->rd = ref(ins.rd, def);
 			break;
 		case instr::add:
+		case instr::umul:
 			ins.rs1 = ref(ins.rs1, use);
 			ins.rs2 = ref(ins.rs2, use);
 			patchme = &next_code.emplace_back(ins);
@@ -649,9 +677,9 @@ std::vector<reg> gcolor(code_t &code)
 		bool spilled = false;
 		bitset<bool, 1> bound(code.regs());
 		const auto color = select(interference, std::move(stk), code.phys_regs, &spilled, bound);
-		remap(code, color);
 		code = rewrite(code, bound);
 		if (!spilled) {
+			remap(code, color);
 			return color;
 		}
 	}
@@ -672,7 +700,7 @@ int main()
 			{ instr::load, 7, b },
 			{ instr::load, d, b },
 			{ instr::load, 4, 8 },
-			{ instr::add , 5, 8, 4 },
+			{ instr::umul, 5, 8, 4 },
 			{ instr::copy, 6, 5 },
 			{ instr::add , c, d, 6 },
 			{ instr::copy, b, 4 },
