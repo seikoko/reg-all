@@ -163,8 +163,7 @@ typename bitset<T, bits>::unit bitset<T, bits>::nzcount() const
 		}
 	} else if constexpr(bits == 2) {
 		for (auto elem : data) {
-			const auto nz = (elem & 0xAAAAAAAA) >> 1
-				      | (elem & 0x55555555);
+			const auto nz = (elem >> 1 | elem) & 0x55555555;
 			count += __builtin_popcount(nz);
 		}
 	} else {
