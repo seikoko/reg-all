@@ -517,14 +517,13 @@ void remap(code_t &code, std::vector<reg> const &mapping)
 	}
 }
 
-void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bool *merged)
+void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 {
 	std::vector<reg> mapping(interference.order());
 	for (reg r = 0; r < mapping.size(); ++r) {
 		mapping[r] = r;
 	}
-	// Briggs test
-	for (reg s = phys_regs; s < interference.order(); ++s) {
+	for (reg s = code.phys_regs; s < interference.order(); ++s) {
 		if (!interference.has(s))
 			continue;
 		for (reg t = s + 1; t < interference.order(); ++t) {
@@ -533,9 +532,21 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 			auto neighbours = interference.madj[s] | interference.madj[t];
 			neighbours.set(s, graph::I_FREE);
 			neighbours.set(t, graph::I_FREE);
-			const reg deg = neighbours.filter_count(graph::interference(3));
-			if (deg >= phys_regs)
-				continue;
+			// I_MOVE | I_NONMOVE
+			const auto deg = neighbours.filter_count(graph::interference(3));
+			// Briggs test
+			if (deg < code.phys_regs) {
+				// keep going
+			} else {
+				// George test
+				for (reg r = 0; r < t; ++r) {
+					if (!interference.has(r) || !graph::is_nonmove(interference.linked(r, t)))
+						continue;
+					if (!graph::is_nonmove(interference.linked(r, s))
+					 && interference.degree[r] >= code.phys_regs)
+						goto next_iter;
+				}
+			}
 			mapping[t] = s;
 			interference.remove(t);
 			stk->push(t);
@@ -543,6 +554,8 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 			interference.madj[s] = neighbours;
 			interference.move_related[s] = neighbours.filter_count(graph::I_MOVE);
 			*merged = true;
+		next_iter:
+			;
 		}
 	}
 	remap(code, mapping);
@@ -585,7 +598,6 @@ void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
 std::vector<reg> select(graph const &interference, stack<reg> stk,
 		reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
 {
-	*spilled = false;
 	auto mapping = std::vector<reg>(interference.order());
 	for (reg phys = 0; phys < phys_regs; ++phys) {
 		mapping[phys] = phys;
@@ -683,21 +695,21 @@ std::vector<reg> gcolor(code_t &code)
 				do {
 					acted = false;
 					strip(interference, code.phys_regs, &stk, &acted);
-					merge(interference, code.phys_regs, code, &stk, &acted);
+					merge(interference, code, &stk, &acted);
 				} while (acted);
 				freeze(interference, code.phys_regs, &acted);
 			} while (acted);
 			evict(interference, code.phys_regs, &stk, &acted);
 		} while (acted);
 		assert(stk.size() >= code.virt_regs);
-		bool spilled = false;
 		bitset<bool, 1> bound(code.regs());
-		const auto color = select(interference, std::move(stk), code.phys_regs, &spilled, bound);
-		code = rewrite(code, bound);
-		if (!spilled) {
+		const auto color = select(interference, std::move(stk), code.phys_regs, &acted, bound);
+		if (!acted) {
 			remap(code, color);
+			code = rewrite(code, bound);
 			return color;
 		}
+		code = rewrite(code, bound);
 	}
 }
 
