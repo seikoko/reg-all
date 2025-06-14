@@ -65,7 +65,7 @@ struct bitset
 	void set(unit i, T value);
 	void acc(unit i, T value);
 	void del(unit i, T value);
-	unit popcount() const;
+	unit nzcount() const;
 
 	std::vector<unit> data;
 	unit elems;
@@ -153,11 +153,21 @@ void bitset<T, bits>::del(unit i, T _value)
 }
 
 template <typename T, size_t bits>
-typename bitset<T, bits>::unit bitset<T, bits>::popcount() const
+typename bitset<T, bits>::unit bitset<T, bits>::nzcount() const
 {
 	unit count = 0;
-	for (auto elem : data) {
-		count += __builtin_popcount(elem);
+	if constexpr(bits == 1) {
+		for (auto elem : data) {
+			count += __builtin_popcount(elem);
+		}
+	} else if constexpr(bits == 2) {
+		for (auto elem : data) {
+			const auto nz = (elem & 0xAAAAAAAA) >> 1
+				      | (elem & 0x55555555);
+			count += __builtin_popcount(nz);
+		}
+	} else {
+		static_assert(false, "unimplemented but easy to extend");
 	}
 	return count;
 }
@@ -463,13 +473,7 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
 				continue;
 			const auto neighbours = interference.madj[s] | interference.madj[t];
-			// 2-bit popcount // 00 = 0, 01/10/11 = 1
-			reg deg = 0;
-			for (size_t i = 0, bit = 0; bit < neighbours.elems * 2; ++i, bit += 32) {
-				const auto mapped = (neighbours.data[i] & 0xAAAAAAAA) >> 1 // 10/11 -> 01
-					          | (neighbours.data[i] & 0x55555555);     // 01    -> 01
-				deg += __builtin_popcount(mapped);
-			}
+			const reg deg = neighbours.nzcount();
 			if (deg >= phys_regs)
 				continue;
 			mapping[t] = s;
@@ -484,6 +488,7 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 	for (reg s = phys_regs; s < interference.order(); ++s) {
 		if (!interference.has(s))
 			continue;
+		// TODO: abuse bitset representation
 		for (reg t = s + 1; t < interference.order(); ++t) {
 			if (!interference.has(t))
 				continue;
