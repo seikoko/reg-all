@@ -302,9 +302,9 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 	case instr::imm:
 		return os << "imm   R." << ins.rd << ", #" << ins.rs1;
 	case instr::load_local:
-		return os << "load  R." << ins.rd << ", L." << ins.rs1;
+		return os << "load  R." << ins.rd << ", L." << ins.rs1 << "[fp]";
 	case instr::store_local:
-		return os << "store R." << ins.rd << ", L." << ins.rs1;
+		return os << "store R." << ins.rd << ", L." << ins.rs1 << "[fp]";
 	default:
 		assert(false);
 	}
@@ -323,6 +323,8 @@ std::ostream &operator<<(std::ostream &os, graph const &g)
 			} else {
 				os << ", ";
 			}
+			if (g.linked(r, t) == graph::I_MOVE)
+				os << 'M';
 			os << t;
 		}
 		os << '\n';
@@ -388,7 +390,6 @@ graph gen_graph(code_t &code)
 		switch (ins.opcode) {
 		case instr::copy:
 			use(ins.rs1, i);
-			use(ins.rd , i);
 			def(ins.rd , i);
 			g.link(ins.rd, ins.rs1, graph::I_MOVE);
 			++g.move_related[ins.rd ];
@@ -396,13 +397,16 @@ graph gen_graph(code_t &code)
 			break;
 		case instr::add:
 			use(ins.rs2, i);
+			if (ins.rd != ins.rs1) {
+				code.insert(code.begin() + i, instr{ instr::copy, ins.rd, ins.rs1 });
+				code[i+1].rs1 = ins.rd;
+			}
 			// fallthrough
 		case instr::load:
 			use(ins.rs1, i);
 			// fallthrough
 		case instr::imm:
 		case instr::load_local:
-			use(ins.rd, i);
 			def(ins.rd, i);
 			break;
 		case instr::store:
@@ -412,7 +416,6 @@ graph gen_graph(code_t &code)
 			use(ins.rd, i);
 			break;
 		case instr::def:
-			use(ins.rd, i);
 			def(ins.rd, 0);
 			break;
 		case instr::req:
@@ -426,13 +429,15 @@ graph gen_graph(code_t &code)
 			// r2 *= rs2 [r0 clobbered]
 			// rd = copy r2
 			if (ins.rd != 2) {
-			clobber(ins.rd, 0);
-			code.insert(code.begin() + i, 2, instr{});
-			code[i+0] = instr{ instr::copy, 2, ins.rs1 };
-			code[i+1] = instr{ instr::umul, 2, 2, ins.rs2 };
-			use(ins.rs2, i+1);
-			code[i+2] = instr{ instr::copy, ins.rd, 2 };
+				clobber(ins.rd, 0);
+				code.insert(code.begin() + i, 2, instr{});
+				code[i+0] = instr{ instr::copy, 2, ins.rs1 };
+				code[i+1] = instr{ instr::umul, 2, 2, ins.rs2 };
+				code[i+2] = instr{ instr::copy, ins.rd, 2 };
 			}
+			use(ins.rs2, i);
+			use(ins.rs1, i);
+			def(ins.rd , i);
 			break;
 		}
 
@@ -453,6 +458,12 @@ graph gen_graph(code_t &code)
 			}
 		}
 	}
+
+	static int _iter = 0;
+	std::cout << "iter #" << _iter++ << ":\n";
+	std::cout << "code:\n" << code;
+	std::cout << "graph:\n" << g;
+
 	return g;
 }
 
@@ -523,7 +534,9 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 		for (reg t = s + 1; t < interference.order(); ++t) {
 			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
 				continue;
-			const auto neighbours = interference.madj[s] | interference.madj[t];
+			auto neighbours = interference.madj[s] | interference.madj[t];
+			neighbours.set(s, graph::I_FREE);
+			neighbours.set(t, graph::I_FREE);
 			const reg deg = neighbours.nzcount();
 			if (deg >= phys_regs)
 				continue;
@@ -639,11 +652,18 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 		switch (ins.opcode) {
 			instr *patchme;
 
+		case instr::copy:
+			if (ins.rd != ins.rs1) {
+				ins.rs1 = ref(ins.rs1, use);
+				patchme = &next_code.emplace_back(ins);
+				patchme->rd = ref(ins.rd, def);
+			}
+			break;
+
 		case instr::add:
 		case instr::umul:
 			ins.rs2 = ref(ins.rs2, use);
 			// fallthrough
-		case instr::copy:
 		case instr::load:
 			ins.rs1 = ref(ins.rs1, use);
 			// fallthrough
