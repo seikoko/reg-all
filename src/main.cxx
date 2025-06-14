@@ -184,6 +184,7 @@ struct graph
 	bool has(reg s) const;
 	reg order() const;
 	reg deg(reg s) const;
+	bool nonmove(reg s) const;
 };
 
 graph::graph(reg count)
@@ -228,6 +229,11 @@ bool graph::has(reg s) const
 reg graph::deg(reg s) const
 {
 	return degree[s];
+}
+
+bool graph::nonmove(reg s) const
+{
+	return removed[s] == S_FROZEN || (removed[s] == S_VISIBLE && !move_related[s]);
 }
 
 template <typename T>
@@ -401,9 +407,7 @@ void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 		// it could be more sophisticated
 		reg max_deg = 0;
 		for (reg r = phys_regs; r < interference.order(); ++r) {
-			if (interference.removed[r] == graph::S_HIDDEN
-			 || interference.removed[r] == graph::S_VISIBLE
-			  && interference.move_related[r])
+			if (!interference.nonmove(r))
 				continue;
 			const auto deg = interference.deg(r);
 			if (deg < phys_regs) {
@@ -551,6 +555,7 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 			assert(mapping[s] < CHAR_BIT * sizeof(reg));
 		} else {
 			*spilled = true;
+			mapping[s] = s;
 		}
 	}
 	return mapping;
@@ -561,8 +566,7 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 	code_t next_code = { {}, code.phys_regs, code.virt_regs };
 	enum usage { use = 0, def = 1 };
 	const auto ref = [&] (reg r, usage u) {
-		assert(r >= code.phys_regs);
-		if (!bound[r]) {
+		if (r >= code.phys_regs && !bound[r]) {
 			const reg next_r = next_code.phys_regs + next_code.virt_regs++;
 			static_assert(instr::load_local + 0 == instr:: load_local);
 			static_assert(instr::load_local + 1 == instr::store_local);
@@ -640,9 +644,9 @@ std::vector<reg> gcolor(code_t &code)
 		bool spilled = false;
 		bitset<bool, 1> bound(code.regs());
 		const auto color = select(interference, std::move(stk), code.phys_regs, &spilled, bound);
+		remap(code, color);
 		code = rewrite(code, bound);
 		if (!spilled) {
-			remap(code, color);
 			return color;
 		}
 	}
