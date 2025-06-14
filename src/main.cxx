@@ -91,7 +91,7 @@ struct bitset
 	void set(unit i, T value);
 	void acc(unit i, T value);
 	void del(unit i, T value);
-	unit nzcount() const;
+	unit filter_count(T mask) const;
 
 	std::vector<unit> data;
 	unit elems;
@@ -179,20 +179,16 @@ void bitset<T, bits>::del(unit i, T _value)
 }
 
 template <typename T, size_t bits>
-typename bitset<T, bits>::unit bitset<T, bits>::nzcount() const
+typename bitset<T, bits>::unit bitset<T, bits>::filter_count(T mask) const
 {
 	unit count = 0;
-	if constexpr(bits == 1) {
-		for (auto elem : data) {
-			count += __builtin_popcount(elem);
+	for (size_t i = 0; i < data.size(); ++i) {
+		unit filter = 0;
+		for (reg b = 0; b < bits; ++b) {
+			if (bit(b) & mask)
+				filter |= data[i + b * elems];
 		}
-	} else if constexpr(bits == 2) {
-		for (auto elem : data) {
-			const auto nz = (elem >> 1 | elem) & 0x55555555;
-			count += __builtin_popcount(nz);
-		}
-	} else {
-		static_assert(false, "unimplemented but easy to extend");
+		count += __builtin_popcount(filter);
 	}
 	return count;
 }
@@ -537,7 +533,7 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 			auto neighbours = interference.madj[s] | interference.madj[t];
 			neighbours.set(s, graph::I_FREE);
 			neighbours.set(t, graph::I_FREE);
-			const reg deg = neighbours.nzcount();
+			const reg deg = neighbours.filter_count(graph::interference(3));
 			if (deg >= phys_regs)
 				continue;
 			mapping[t] = s;
@@ -545,20 +541,8 @@ void merge(graph &interference, reg phys_regs, code_t &code, stack<reg> *stk, bo
 			stk->push(t);
 			interference.degree[s] = deg;
 			interference.madj[s] = neighbours;
+			interference.move_related[s] = neighbours.filter_count(graph::I_MOVE);
 			*merged = true;
-		}
-		interference.move_related[s] = 0;
-	}
-	for (reg s = phys_regs; s < interference.order(); ++s) {
-		if (!interference.has(s))
-			continue;
-		// TODO: abuse bitset representation
-		for (reg t = s + 1; t < interference.order(); ++t) {
-			if (!interference.has(t))
-				continue;
-			int inc = interference.linked(s, t) >> 1;
-			interference.move_related[s] += inc;
-			interference.move_related[t] += inc;
 		}
 	}
 	remap(code, mapping);
