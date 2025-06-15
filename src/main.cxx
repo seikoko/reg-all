@@ -96,6 +96,8 @@ struct bitset
 	unit filter_count(T mask) const;
 	bool zero() const;
 
+	// TODO: make the structure non owning to be able to do the allocation
+	// as well as slicing the output
 	std::vector<unit> data;
 	unit elems;
 };
@@ -825,6 +827,8 @@ std::vector<reg> gcolor(code_t &code)
 		bitset<bool, 1> bound(code.regs());
 		const auto color = select(interference, std::move(stk), code.phys_regs, &acted, bound);
 		remap(code, color);
+		// TODO: apply a spill-less graph coloring to spilled nodes to debloat the graph
+		// strip->merge(no degree tests) cycle ->select
 		code = rewrite(code, bound);
 		if (!acted) {
 			return color;
@@ -839,8 +843,8 @@ int main()
 #if 1
 	code_t code{
 		{
-			// { instr::def , 3 },
-			// { instr::copy, e, 3 },
+			{ instr::def , 3 },
+			{ instr::copy, e, 3 },
 			{ instr::def , 0 },
 			{ instr::def , 1 },
 			{ instr::copy, c, 0 },
@@ -856,12 +860,12 @@ int main()
 			{ instr::add , c, d, 6 },
 			{ instr::copy, b, 4 },
 			{ instr::copy, 0, 6 },
-			// { instr::copy, 1, c },
-			// { instr::copy, 2, b },
+			{ instr::copy, 1, c },
+			{ instr::copy, 2, b },
 			{ instr::req , 0 },
-			// { instr::req , 1 },
-			// { instr::copy, 3, e },
-			// { instr::req , 3 },
+			{ instr::req , 1 },
+			{ instr::copy, 3, e },
+			{ instr::req , 3 },
 		},
 		4,
 		11,
