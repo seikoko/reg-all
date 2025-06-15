@@ -44,6 +44,8 @@ struct instr
 		add,   // rd <- rs1 + rs2
 		imm,   // rd <- #rs1 // rd <- imm1
 		umul,  // rd <- rs1 * rs2
+
+		clobber, // rd <- undef because of rs1
 	} opcode;
 	reg rd ;
 	reg rs1; // imm1
@@ -92,6 +94,7 @@ struct bitset
 	void acc(unit i, T value);
 	void del(unit i, T value);
 	unit filter_count(T mask) const;
+	bool zero() const;
 
 	std::vector<unit> data;
 	unit elems;
@@ -191,6 +194,16 @@ typename bitset<T, bits>::unit bitset<T, bits>::filter_count(T mask) const
 		count += __builtin_popcount(filter);
 	}
 	return count;
+}
+
+template <typename T, size_t bits>
+bool bitset<T, bits>::zero() const
+{
+	for (size_t i = 0; i < data.size(); ++i) {
+		if (data[i])
+			return false;
+	}
+	return true;
 }
 
 struct graph
@@ -297,6 +310,22 @@ std::ostream &operator<<(std::ostream &os, std::deque<T> const &q)
 	return os;
 }
 
+template <typename T, size_t bits>
+std::ostream &operator<<(std::ostream &os, bitset<T, bits> const &b)
+{
+	os << "| ";
+	for (typename bitset<T, bits>::unit i = 0; i < b.elems; ++i) {
+		if (b[i]) {
+			os << i;
+			if (bits > 1)
+				os << "." << b[i];
+			os << " ";
+		}
+	}
+	os << "| ";
+	return os;
+}
+
 std::ostream &operator<<(std::ostream &os, instr const &ins)
 {
 	switch (ins.opcode) {
@@ -320,6 +349,8 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 		return os << "load  R." << ins.rd << ", L." << ins.rs1 << "[fp]" << '\n';
 	case instr::store_local:
 		return os << "store R." << ins.rd << ", L." << ins.rs1 << "[fp]" << '\n';
+	case instr::clobber:
+		return os << "// R." << ins.rd << " clobbered by R." << ins.rs1 << '\n';
 	default:
 		assert(false);
 	}
@@ -379,7 +410,37 @@ struct code_t : public std::vector<instr>
 	reg regs() const { return phys_regs + virt_regs; }
 };
 
-graph gen_graph(code_t &code)
+code_t canonical(code_t const &code)
+{
+	code_t canon{ {}, code.phys_regs, code.virt_regs };
+	for (auto ins : code) {
+		switch (ins.opcode) {
+		case instr::def:
+		case instr::req:
+		case instr::copy:
+		case instr::load:
+		case instr::store:
+		case instr::load_local:
+		case instr::store_local:
+		case instr::imm:
+		case instr::clobber:
+			canon.push_back(ins);
+			break;
+		case instr::add:
+			canon.emplace_back(instr{ instr::copy, ins.rd, ins.rs1 });
+			canon.emplace_back(instr{ instr::add , ins.rd, ins.rd , ins.rs2 });
+			break;
+		case instr::umul:
+			canon.emplace_back(instr{ instr::copy, 2, ins.rs1 });
+			canon.emplace_back(instr{ instr::umul, 2, 2, ins.rs2 });
+			canon.emplace_back(instr{ instr::copy, ins.rd, 2 });
+			break;
+		}
+	}
+	return canon;
+}
+
+graph gen_graph(code_t const &code)
 {
 	// first registers correspond to the physical registers and all interfere with each other
 	// when strictly necessary, instructions can address physical registers
@@ -392,43 +453,45 @@ graph gen_graph(code_t &code)
 	// copy %eax, r3; copy %edx, r4;
 	graph g(code.regs());
 	// [definition, last use)
-	std::vector<std::pair<reg, reg>> live;
-	for (reg r = 0; r < code.regs(); ++r) {
-		live.emplace_back(reg(-1), reg(0));
-	}
-	const auto idx = [&] (reg i) -> auto&   { return live[i]; };
-	const auto use = [&] (reg r, reg index) { if (idx(r).second < index) idx(r).second = index; };
-	const auto def = [&] (reg r, reg index) { if (idx(r).first  > index) idx(r).first  = index; };
+	std::vector<bitset<bool, 1>> live(code.regs(), code.size() + 1);
+	const auto use = [&] (reg r, reg index) { live[r].acc(index, true); };
+	const auto def = [&] (reg r, reg index) { live[r].del(index, true); };
 	const auto clobber = [&] (reg virt, reg phys) { g.link(virt, phys, graph::I_NONMOVE); };
 
-	for (reg i = 0; i < code.size(); ++i) {
+	static int _iter = 0;
+	std::cout << "iter #" << _iter++ << ":\n";
+
+	reg i = code.size() - 1;
+	do {
+		for (reg r = 0; r < code.regs(); ++r) {
+			live[r].set(i, live[r][i+1]);
+		}
+
 		const auto ins = code[i];
 		switch (ins.opcode) {
 		case instr::copy:
-			use(ins.rs1, i);
 			def(ins.rd , i);
+			use(ins.rs1, i);
 			g.link(ins.rd, ins.rs1, graph::I_MOVE);
 			break;
-		case instr::add:
-			use(ins.rs2, i);
-			if (ins.rd != ins.rs1) {
-				code.insert(code.begin() + i, instr{ instr::copy, ins.rd, ins.rs1 });
-				code[i+1].rs1 = ins.rd;
-				// force analysis
-				--i;
-				continue;
-			}
-			// fallthrough
-		case instr::load:
-			use(ins.rs1, i);
-			// fallthrough
 		case instr::imm:
 		case instr::load_local:
 			def(ins.rd, i);
 			break;
-		case instr::store:
+		case instr::load:
+			def(ins.rd, i);
 			use(ins.rs1, i);
-			// fallthrough
+			break;
+		case instr::add:
+		case instr::umul:
+			def(ins.rd, i);
+			use(ins.rs1, i);
+			use(ins.rs2, i);
+			break;
+		case instr::store:
+			def(ins.rd, i);
+			use(ins.rs1, i);
+			break;
 		case instr::store_local:
 			use(ins.rd, i);
 			break;
@@ -436,29 +499,21 @@ graph gen_graph(code_t &code)
 			def(ins.rd, 0);
 			break;
 		case instr::req:
-			use(ins.rd, reg(-1));
+			use(ins.rd, code.size()-1);
 			break;
-		case instr::umul:
-			// for fun, the result is stored in r0:r2
-			// so rd = rs1 * rs2
-			// expands to
-			// r2 = copy rs1
-			// r2 *= rs2 [r0 clobbered]
-			// rd = copy r2
-			if (ins.rd != 2) {
-				clobber(ins.rd, 0);
-				code.insert(code.begin() + i, 2, instr{});
-				code[i+0] = instr{ instr::copy, 2, ins.rs1 };
-				code[i+1] = instr{ instr::umul, 2, 2, ins.rs2 };
-				code[i+2] = instr{ instr::copy, ins.rd, 2 };
-				--i;
-				continue;
-			}
-			use(ins.rs2, i);
-			use(ins.rs1, i);
-			def(ins.rd , i);
+		case instr::clobber:
+			clobber(ins.rd, ins.rs1);
 			break;
 		}
+	} while (i--);
+
+	for (reg i = 0; i < code.size(); ++i) {
+		bitset<bool, 1> _live(code.regs());
+		for (reg r = 0; r < code.regs(); ++r) {
+			if (live[r][i])
+				_live.acc(r, true);
+		}
+		std::cout << i << ": " << _live << code[i];
 	}
 
 	// render physical registers
@@ -470,17 +525,14 @@ graph gen_graph(code_t &code)
 	// render virtual registers' interference
 	for (reg t = 0; t < code.regs(); ++t) {
 		for (reg s = 0; s < t; ++s) {
-			bool overlap = idx(s).first < idx(t).second && idx(t).first < idx(s).second;
-			if (overlap) {
+			const auto overlap = live[s] & live[t];
+			if (!overlap.zero()) {
 				g.link(s, t, graph::I_NONMOVE);
 			}
 		}
 	}
 
-	static int _iter = 0;
-	std::cout << "iter #" << _iter++ << ":\n";
-	std::cout << "code:\n" << code;
-	std::cout << "graph:\n" << g;
+	std::cout << "graph:\n" << g << std::endl;
 
 	return g;
 }
@@ -531,6 +583,7 @@ void remap(code_t &code, std::vector<reg> const &mapping)
 		case instr::copy:
 		case instr::load:
 		case instr::store:
+		case instr::clobber:
 			ins.rs1 = mapping[ins.rs1];
 			// fallthrough
 		case instr::def:
@@ -738,6 +791,12 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 			ins.rd  = ref(ins.rd , use);
 			next_code.emplace_back(ins);
 			break;
+
+		case instr::clobber:
+			// a spilled variable isn't going to clobber anyone
+			if (bound[ins.rs1])
+				next_code.emplace_back(ins);
+			break;
 		}
 	}
 	return next_code;
@@ -745,6 +804,7 @@ code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
 
 std::vector<reg> gcolor(code_t &code)
 {
+	code = canonical(code);
 	std::vector<reg> offsets(code.virt_regs);
 	while (true) {
 		auto interference = gen_graph(code);
@@ -803,7 +863,7 @@ int main()
 			// { instr::copy, 3, e },
 			// { instr::req , 3 },
 		},
-		6,
+		4,
 		11,
 	};
 #endif
