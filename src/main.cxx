@@ -548,19 +548,20 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 	for (reg r = 0; r < mapping.size(); ++r) {
 		mapping[r] = r;
 	}
-	for (reg s = code.phys_regs; s < interference.order(); ++s) {
+	for (reg s = 0; s < interference.order(); ++s) {
 		if (!interference.has(s))
 			continue;
-		for (reg t = 0; t < s; ++t) {
-			if (!interference.has(t) || !graph::is_move(interference.linked(t, s)))
+		for (reg t = s + 1; t < interference.order(); ++t) {
+			// anything >= s is unmapped
+			// anything <  s may be mapped
+			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
 				continue;
 			auto neighbours = interference.madj[s] | interference.madj[t];
-			for (reg r = 0; r < interference.order(); ++r) {
+			for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
+				reg r = mapping[unmapped_r];
 				if (!interference.has(r))
 					neighbours.set(r, graph::I_FREE);
 			}
-			// assert(neighbours[s] != graph::I_NONMOVE);
-			// assert(neighbours[t] != graph::I_NONMOVE);
 			neighbours.set(s, graph::I_FREE);
 			neighbours.set(t, graph::I_FREE);
 			// I_MOVE | I_NONMOVE
@@ -570,10 +571,12 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 				// keep going
 			} else {
 				// George test
-				for (reg r = 0; r < t; ++r) {
-					if (!interference.has(r) || !graph::is_nonmove(interference.linked(r, t)))
+				for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
+					reg r = mapping[unmapped_r];
+					assert(!interference.has(r) || (interference.linked(r, t) == interference.linked(t, r)));
+					if (!interference.has(r) || graph::is_free(interference.linked(r, t)))
 						continue;
-					if (!graph::is_nonmove(interference.linked(r, s))
+					if (graph::is_free(interference.linked(r, s))
 					 && interference.deg(r) >= code.phys_regs)
 						goto next_iter;
 				}
@@ -581,7 +584,8 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 			mapping[s] = t;
 			interference.remove(s);
 			stk->push(s);
-			for (reg r = 0; r < interference.order(); ++r) {
+			for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
+				reg r = mapping[unmapped_r];
 				if (neighbours[r])
 					interference.link(r, t, neighbours[r]);
 			}
@@ -760,12 +764,12 @@ int main()
 {
 
 	enum { a = 0xa, b, c, d, e, f };
-#define A 1
+#define A 0
 #if 1
 	code_t code{
 		{
 #if A
-			// { instr::store_local, 0, e },
+			{ instr::store_local, 0, e },
 			{ instr::def , c },
 			{ instr::def , b },
 #else
@@ -790,7 +794,7 @@ int main()
 			{ instr::req , 6 },
 			{ instr::req , c },
 			{ instr::req , b },
-			// { instr::load_local, 0, e },
+			{ instr::load_local, 0, e },
 #endif
 		},
 		4,
