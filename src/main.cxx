@@ -393,12 +393,12 @@ graph gen_graph(code_t &code)
 	graph g(code.regs());
 	// [definition, last use)
 	std::vector<std::pair<reg, reg>> live;
-	for (reg r = 0; r < code.virt_regs; ++r) {
+	for (reg r = 0; r < code.regs(); ++r) {
 		live.emplace_back(reg(-1), reg(0));
 	}
-	const auto idx = [&] (reg i) -> auto&   { return live[i - code.phys_regs]; };
-	const auto use = [&] (reg r, reg index) { if (r >= code.phys_regs && idx(r).second < index) idx(r).second = index; };
-	const auto def = [&] (reg r, reg index) { if (r >= code.phys_regs && idx(r).first  > index) idx(r).first  = index; };
+	const auto idx = [&] (reg i) -> auto&   { return live[i]; };
+	const auto use = [&] (reg r, reg index) { if (idx(r).second < index) idx(r).second = index; };
+	const auto def = [&] (reg r, reg index) { if (idx(r).first  > index) idx(r).first  = index; };
 	const auto clobber = [&] (reg virt, reg phys) { g.link(virt, phys, graph::I_NONMOVE); };
 
 	for (reg i = 0; i < code.size(); ++i) {
@@ -459,7 +459,6 @@ graph gen_graph(code_t &code)
 			def(ins.rd , i);
 			break;
 		}
-
 	}
 
 	// render physical registers
@@ -469,8 +468,8 @@ graph gen_graph(code_t &code)
 		}
 	}
 	// render virtual registers' interference
-	for (reg t = code.phys_regs + 1; t < code.regs(); ++t) {
-		for (reg s = code.phys_regs; s < t; ++s) {
+	for (reg t = 0; t < code.regs(); ++t) {
+		for (reg s = 0; s < t; ++s) {
 			bool overlap = idx(s).first < idx(t).second && idx(t).first < idx(s).second;
 			if (overlap) {
 				g.link(s, t, graph::I_NONMOVE);
@@ -488,6 +487,7 @@ graph gen_graph(code_t &code)
 
 void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 {
+	bool _stripped = false;
 	while (true) {
 		// find any node of insignificant degree
 		// default with an impossible value
@@ -512,10 +512,12 @@ void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 		stk->push(chosen_reg);
 		// TODO: potential optimization : just set interference.deg(r) = virt_regs+1 so removed nodes are never selected
 		interference.remove(chosen_reg);
-		*stripped = true;
+		_stripped = *stripped = true;
 	}
 
-	std::cout << "strip:\n" << interference << *stk;
+	std::cout << "strip:\n";
+	if (_stripped)
+		std::cout << interference << *stk;
 }
 
 void remap(code_t &code, std::vector<reg> const &mapping)
@@ -544,6 +546,7 @@ void remap(code_t &code, std::vector<reg> const &mapping)
 
 void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 {
+	bool _merged = false;
 	std::vector<reg> mapping(interference.order());
 	for (reg r = 0; r < mapping.size(); ++r) {
 		mapping[r] = r;
@@ -581,45 +584,50 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 						goto next_iter;
 				}
 			}
-			mapping[s] = t;
-			interference.remove(s);
-			stk->push(s);
+			// small reg takes over large reg
+			mapping[t] = s;
+			interference.remove(t);
+			stk->push(t);
 			for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
 				reg r = mapping[unmapped_r];
 				if (neighbours[r])
-					interference.link(r, t, neighbours[r]);
+					interference.link(r, s, neighbours[r]);
 			}
-			interference.madj[t] = neighbours;
-			*merged = true;
-			// s is gone
-			break;
+			interference.madj[s] = neighbours;
+			_merged = *merged = true;
 		next_iter:
 			;
 		}
 	}
 	remap(code, mapping);
 
-	std::cout << "merge:\n" << interference << *stk << mapping;
+	std::cout << "merge:\n";
+	if (_merged)
+		std::cout << interference << *stk << mapping << code;
 }
 
 void freeze(graph &interference, reg phys_regs, bool *froze)
 {
+	bool _froze = false;
 	for (reg r = 0; r < interference.order(); ++r) {
 		if (!interference.has(r))
 			continue;
 		const auto deg = interference.deg(r);
 		if (deg < phys_regs) {
 			interference.removed.acc(r, graph::S_FROZEN);
-			*froze = true;
+			_froze = *froze = true;
 			break;
 		}
 	}
 
-	std::cout << "freeze:\n" << interference;
+	std::cout << "freeze:\n";
+	if (_froze)
+		std::cout << interference;
 }
 
 void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
 {
+	bool _evicted = false;
 	reg max_deg = 0;
 	reg best = interference.order();
 	for (reg r = 0; r < interference.order(); ++r) {
@@ -634,10 +642,12 @@ void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
 	if (best != interference.order()) {
 		stk->push(best);
 		interference.remove(best);
-		*acted = true;
+		_evicted = *acted = true;
 	}
 
-	std::cout << "evict:\n" << interference << *stk;
+	std::cout << "evict:\n";
+	if (_evicted)
+		std::cout << interference << *stk;
 }
 
 std::vector<reg> select(graph const &interference, stack<reg> stk,
@@ -670,6 +680,9 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 			mapping[s] = s;
 		}
 	}
+
+	std::cout << "select:\n" << mapping;
+
 	return mapping;
 }
 
@@ -751,12 +764,11 @@ std::vector<reg> gcolor(code_t &code)
 		assert(stk.size() >= code.virt_regs);
 		bitset<bool, 1> bound(code.regs());
 		const auto color = select(interference, std::move(stk), code.phys_regs, &acted, bound);
+		remap(code, color);
+		code = rewrite(code, bound);
 		if (!acted) {
-			remap(code, color);
-			code = rewrite(code, bound);
 			return color;
 		}
-		code = rewrite(code, bound);
 	}
 }
 
@@ -764,18 +776,15 @@ int main()
 {
 
 	enum { a = 0xa, b, c, d, e, f };
-#define A 0
 #if 1
 	code_t code{
 		{
-#if A
-			{ instr::store_local, 0, e },
-			{ instr::def , c },
-			{ instr::def , b },
-#else
+			// { instr::def , 3 },
+			// { instr::copy, e, 3 },
+			{ instr::def , 0 },
+			{ instr::def , 1 },
 			{ instr::copy, c, 0 },
 			{ instr::copy, b, 1 },
-#endif
 			{ instr::load, 9, b },
 			{ instr::add , a, c, 9 },
 			{ instr::add , 8, 9, a },
@@ -786,18 +795,15 @@ int main()
 			{ instr::copy, 6, 5 },
 			{ instr::add , c, d, 6 },
 			{ instr::copy, b, 4 },
-#if !A
 			{ instr::copy, 0, 6 },
-			{ instr::copy, 1, c },
-			{ instr::copy, 2, b },
-#else
-			{ instr::req , 6 },
-			{ instr::req , c },
-			{ instr::req , b },
-			{ instr::load_local, 0, e },
-#endif
+			// { instr::copy, 1, c },
+			// { instr::copy, 2, b },
+			{ instr::req , 0 },
+			// { instr::req , 1 },
+			// { instr::copy, 3, e },
+			// { instr::req , 3 },
 		},
-		4,
+		6,
 		11,
 	};
 #endif
