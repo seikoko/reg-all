@@ -528,7 +528,7 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 	for (reg s = code.phys_regs; s < interference.order(); ++s) {
 		if (!interference.has(s))
 			continue;
-		for (reg t = s + 1; t < interference.order(); ++t) {
+		for (reg t = code.phys_regs; t < s; ++t) {
 			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
 				continue;
 			auto neighbours = interference.madj[s] | interference.madj[t];
@@ -551,13 +551,15 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 						goto next_iter;
 				}
 			}
-			mapping[t] = s;
-			interference.remove(t);
-			stk->push(t);
-			interference.degree[s] = deg;
-			interference.madj[s] = neighbours;
-			interference.move_related[s] = neighbours.filter_count(graph::I_MOVE);
+			mapping[s] = t;
+			interference.remove(s);
+			stk->push(s);
+			interference.degree[t] = deg;
+			interference.madj[t] = neighbours;
+			interference.move_related[t] = neighbours.filter_count(graph::I_MOVE);
 			*merged = true;
+			// s is gone
+			break;
 		next_iter:
 			;
 		}
@@ -612,7 +614,7 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 		// represents a mask of free registers relative to neighbors
 		reg free = bits(phys_regs);
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
-		assert(!bound[s]);
+		assert(!bound[s]); // eventually we want this to fail!
 		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
 			int msk = interference.madj[s][t];
