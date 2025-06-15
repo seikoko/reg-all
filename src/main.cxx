@@ -195,17 +195,15 @@ typename bitset<T, bits>::unit bitset<T, bits>::filter_count(T mask) const
 
 struct graph
 {
-	enum interference { I_FREE = 0, I_NONMOVE = 1, I_MOVE = 2 /* or 3 */ };
+	enum interference { I_FREE = 0, I_MOVE = 1, I_NONMOVE = 2 /* or 3 */ };
 	static bool is_free(interference i) { return i == I_FREE; }
-	static bool is_nonmove(interference i) { return i == I_NONMOVE; }
-	static bool is_move(interference i) { return i >= I_MOVE; }
+	static bool is_move(interference i) { return i == I_MOVE; }
+	static bool is_nonmove(interference i) { return i >= I_NONMOVE; }
 
 	std::vector<bitset<interference, 2>> madj;
-	std::vector<reg> degree;
 
 	enum state { S_VISIBLE = 0, S_FROZEN = 1, S_HIDDEN = 2 };
 	bitset<state, 2> removed;
-	std::vector<reg> move_related;
 
 	graph(reg count);
 
@@ -216,10 +214,11 @@ struct graph
 	reg order() const;
 	reg deg(reg s) const;
 	bool nonmove(reg s) const;
+	reg move_related(reg s) const;
 };
 
 graph::graph(reg count)
-	: madj(count, count), degree(count), removed(count), move_related(count)
+	: madj(count, count), removed(count)
 {
 }
 
@@ -233,8 +232,6 @@ void graph::link(reg s, reg t, interference i)
 	// assert(i != NONMOVE || linked(s, t) != I_NONMOVE);
 	madj[s].acc(t, i);
 	madj[t].acc(s, i);
-	degree[s]++;
-	degree[t]++;
 }
 
 graph::interference graph::linked(reg s, reg t) const
@@ -246,12 +243,6 @@ void graph::remove(reg s)
 {
 	// assert(removed[s] != S_HIDDEN);
 	removed.set(s, S_HIDDEN);
-	// TODO: write a unit-wise loop
-	for (reg t = 0; t < order(); ++t) {
-		reg flag = madj[s][t];
-		flag |= flag >> 1;
-		degree[t] -= flag & 1;
-	}
 }
 
 bool graph::has(reg s) const
@@ -261,12 +252,27 @@ bool graph::has(reg s) const
 
 reg graph::deg(reg s) const
 {
-	return degree[s];
+	reg d = 0;
+	for (reg t = 0; t < order(); ++t) {
+		if (has(t) && linked(s, t))
+			++d;
+	}
+	return d;
+}
+
+reg graph::move_related(reg s) const
+{
+	reg m = 0;
+	for (reg t = 0; t < order(); ++t) {
+		if (has(t) && is_move(linked(s, t)))
+			++m;
+	}
+	return m;
 }
 
 bool graph::nonmove(reg s) const
 {
-	return removed[s] == S_FROZEN || (removed[s] == S_VISIBLE && !move_related[s]);
+	return removed[s] == S_FROZEN || (removed[s] == S_VISIBLE && !move_related(s));
 }
 
 template <typename T>
@@ -274,7 +280,18 @@ std::ostream &operator<<(std::ostream &os, std::vector<T> const &v)
 {
 	os << "{\n";
 	for (size_t i = 0; i < v.size(); ++i) {
-		os << i << ": " << v[i] << '\n';
+		os << " " << i << ":" << v[i];
+	}
+	os << "}\n";
+	return os;
+}
+
+template <typename T>
+std::ostream &operator<<(std::ostream &os, std::deque<T> const &q)
+{
+	os << "{  ";
+	for (size_t i = 0; i < q.size(); ++i) {
+		os << q[i] << "  ";
 	}
 	os << "}\n";
 	return os;
@@ -284,25 +301,25 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 {
 	switch (ins.opcode) {
 	case instr::def:
-		return os << "def   R." << ins.rd;
+		return os << "def   R." << ins.rd << '\n';
 	case instr::req:
-		return os << "req   R." << ins.rd;
+		return os << "req   R." << ins.rd << '\n';
 	case instr::copy:
-		return os << "copy  R." << ins.rd << ", R." << ins.rs1;
+		return os << "copy  R." << ins.rd << ", R." << ins.rs1 << '\n';
 	case instr::load:
-		return os << "load  R." << ins.rd << ", [R." << ins.rs1 << "]";
+		return os << "load  R." << ins.rd << ", [R." << ins.rs1 << "]" << '\n';
 	case instr::store:
-		return os << "store R." << ins.rd << ", [R." << ins.rs1 << "]";
+		return os << "store R." << ins.rd << ", [R." << ins.rs1 << "]" << '\n';
 	case instr::add:
-		return os << "add   R." << ins.rd << ", R." << ins.rs1 << ", R." << ins.rs2;
+		return os << "add   R." << ins.rd << ", R." << ins.rs1 << ", R." << ins.rs2 << '\n';
 	case instr::umul:
-		return os << "umul  R." << ins.rd << ", R." << ins.rs1 << ", R." << ins.rs2;
+		return os << "umul  R." << ins.rd << ", R." << ins.rs1 << ", R." << ins.rs2 << '\n';
 	case instr::imm:
-		return os << "imm   R." << ins.rd << ", #" << ins.rs1;
+		return os << "imm   R." << ins.rd << ", #" << ins.rs1 << '\n';
 	case instr::load_local:
-		return os << "load  R." << ins.rd << ", L." << ins.rs1 << "[fp]";
+		return os << "load  R." << ins.rd << ", L." << ins.rs1 << "[fp]" << '\n';
 	case instr::store_local:
-		return os << "store R." << ins.rd << ", L." << ins.rs1 << "[fp]";
+		return os << "store R." << ins.rd << ", L." << ins.rs1 << "[fp]" << '\n';
 	default:
 		assert(false);
 	}
@@ -311,19 +328,20 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 std::ostream &operator<<(std::ostream &os, graph const &g)
 {
 	for (reg r = 0; r < g.order(); ++r) {
-		os << r << "(" << g.deg(r) << "): ";
+		if (g.removed[r] & graph::S_HIDDEN)
+			continue;
+		os << " F"[g.removed[r]];
+		os << r << "(d=" << g.deg(r) << ",m=" << g.move_related(r) << "): ";
 		bool first = true;
-		if (g.has(r)) for (reg t = 0; t < g.order(); ++t) {
+		for (reg t = 0; t < g.order(); ++t) {
 			if (!g.linked(r, t) || !g.has(t))
 				continue;
 			if (first) {
 				first = false;
 			} else {
-				os << ", ";
+				os << " ";
 			}
-			if (g.linked(r, t) == graph::I_MOVE)
-				os << 'M';
-			os << t;
+			os << " M ."[g.linked(r, t)] << t;
 		}
 		os << '\n';
 	}
@@ -390,14 +408,15 @@ graph gen_graph(code_t &code)
 			use(ins.rs1, i);
 			def(ins.rd , i);
 			g.link(ins.rd, ins.rs1, graph::I_MOVE);
-			++g.move_related[ins.rd ];
-			++g.move_related[ins.rs1];
 			break;
 		case instr::add:
 			use(ins.rs2, i);
 			if (ins.rd != ins.rs1) {
 				code.insert(code.begin() + i, instr{ instr::copy, ins.rd, ins.rs1 });
 				code[i+1].rs1 = ins.rd;
+				// force analysis
+				--i;
+				continue;
 			}
 			// fallthrough
 		case instr::load:
@@ -432,6 +451,8 @@ graph gen_graph(code_t &code)
 				code[i+0] = instr{ instr::copy, 2, ins.rs1 };
 				code[i+1] = instr{ instr::umul, 2, 2, ins.rs2 };
 				code[i+2] = instr{ instr::copy, ins.rd, 2 };
+				--i;
+				continue;
 			}
 			use(ins.rs2, i);
 			use(ins.rs1, i);
@@ -475,7 +496,7 @@ void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 		// here the heuristic selects the max degree
 		// it could be more sophisticated
 		reg max_deg = 0;
-		for (reg r = phys_regs; r < interference.order(); ++r) {
+		for (reg r = 0; r < interference.order(); ++r) {
 			if (!interference.nonmove(r))
 				continue;
 			const auto deg = interference.deg(r);
@@ -493,6 +514,8 @@ void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 		interference.remove(chosen_reg);
 		*stripped = true;
 	}
+
+	std::cout << "strip:\n" << interference << *stk;
 }
 
 void remap(code_t &code, std::vector<reg> const &mapping)
@@ -528,10 +551,14 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 	for (reg s = code.phys_regs; s < interference.order(); ++s) {
 		if (!interference.has(s))
 			continue;
-		for (reg t = code.phys_regs; t < s; ++t) {
-			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
+		for (reg t = 0; t < s; ++t) {
+			if (!interference.has(t) || !graph::is_move(interference.linked(t, s)))
 				continue;
 			auto neighbours = interference.madj[s] | interference.madj[t];
+			for (reg r = 0; r < interference.order(); ++r) {
+				if (!interference.has(r))
+					neighbours.set(r, graph::I_FREE);
+			}
 			// assert(neighbours[s] != graph::I_NONMOVE);
 			// assert(neighbours[t] != graph::I_NONMOVE);
 			neighbours.set(s, graph::I_FREE);
@@ -554,9 +581,11 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 			mapping[s] = t;
 			interference.remove(s);
 			stk->push(s);
-			interference.degree[t] = deg;
+			for (reg r = 0; r < interference.order(); ++r) {
+				if (neighbours[r])
+					interference.link(r, t, neighbours[r]);
+			}
 			interference.madj[t] = neighbours;
-			interference.move_related[t] = neighbours.filter_count(graph::I_MOVE);
 			*merged = true;
 			// s is gone
 			break;
@@ -565,27 +594,31 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 		}
 	}
 	remap(code, mapping);
+
+	std::cout << "merge:\n" << interference << *stk << mapping;
 }
 
 void freeze(graph &interference, reg phys_regs, bool *froze)
 {
-	for (reg r = phys_regs; r < interference.order(); ++r) {
+	for (reg r = 0; r < interference.order(); ++r) {
 		if (!interference.has(r))
 			continue;
 		const auto deg = interference.deg(r);
 		if (deg < phys_regs) {
 			interference.removed.acc(r, graph::S_FROZEN);
 			*froze = true;
-			return;
+			break;
 		}
 	}
+
+	std::cout << "freeze:\n" << interference;
 }
 
 void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
 {
 	reg max_deg = 0;
 	reg best = interference.order();
-	for (reg r = phys_regs; r < interference.order(); ++r) {
+	for (reg r = 0; r < interference.order(); ++r) {
 		if (interference.removed[r] == graph::S_HIDDEN)
 			continue;
 		const auto deg = interference.deg(r);
@@ -599,6 +632,8 @@ void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
 		interference.remove(best);
 		*acted = true;
 	}
+
+	std::cout << "evict:\n" << interference << *stk;
 }
 
 std::vector<reg> select(graph const &interference, stack<reg> stk,
@@ -614,7 +649,8 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 		// represents a mask of free registers relative to neighbors
 		reg free = bits(phys_regs);
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
-		assert(!bound[s]); // eventually we want this to fail!
+		if (bound[s])
+			continue;
 		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
 			int msk = interference.madj[s][t];
