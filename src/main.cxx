@@ -230,6 +230,7 @@ reg graph::order() const
 
 void graph::link(reg s, reg t, interference i)
 {
+	// assert(i != NONMOVE || linked(s, t) != I_NONMOVE);
 	madj[s].acc(t, i);
 	madj[t].acc(s, i);
 	degree[s]++;
@@ -243,6 +244,7 @@ graph::interference graph::linked(reg s, reg t) const
 
 void graph::remove(reg s)
 {
+	// assert(removed[s] != S_HIDDEN);
 	removed.set(s, S_HIDDEN);
 	// TODO: write a unit-wise loop
 	for (reg t = 0; t < order(); ++t) {
@@ -530,6 +532,8 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
 				continue;
 			auto neighbours = interference.madj[s] | interference.madj[t];
+			// assert(neighbours[s] != graph::I_NONMOVE);
+			// assert(neighbours[t] != graph::I_NONMOVE);
 			neighbours.set(s, graph::I_FREE);
 			neighbours.set(t, graph::I_FREE);
 			// I_MOVE | I_NONMOVE
@@ -543,7 +547,7 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 					if (!interference.has(r) || !graph::is_nonmove(interference.linked(r, t)))
 						continue;
 					if (!graph::is_nonmove(interference.linked(r, s))
-					 && interference.degree[r] >= code.phys_regs)
+					 && interference.deg(r) >= code.phys_regs)
 						goto next_iter;
 				}
 			}
@@ -601,13 +605,14 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 	auto mapping = std::vector<reg>(interference.order());
 	for (reg phys = 0; phys < phys_regs; ++phys) {
 		mapping[phys] = phys;
-		bound.set(phys, true);
+		bound.acc(phys, true);
 	}
 	while (!stk.empty()) {
 		const auto s = stk.pop();
 		// represents a mask of free registers relative to neighbors
 		reg free = bits(phys_regs);
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
+		assert(!bound[s]);
 		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
 			int msk = interference.madj[s][t];
@@ -616,7 +621,7 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 		}
 		if (free) {
 			mapping[s] = some_bit_index(free);
-			bound.set(s, true);
+			bound.acc(s, true);
 			assert(mapping[s] < CHAR_BIT * sizeof(reg));
 		} else {
 			*spilled = true;
@@ -717,11 +722,18 @@ int main()
 {
 
 	enum { a = 0xa, b, c, d, e, f };
+#define A 1
 #if 1
 	code_t code{
 		{
+#if A
+			// { instr::store_local, 0, e },
 			{ instr::def , c },
 			{ instr::def , b },
+#else
+			{ instr::copy, c, 0 },
+			{ instr::copy, b, 1 },
+#endif
 			{ instr::load, 9, b },
 			{ instr::add , a, c, 9 },
 			{ instr::add , 8, 9, a },
@@ -732,12 +744,19 @@ int main()
 			{ instr::copy, 6, 5 },
 			{ instr::add , c, d, 6 },
 			{ instr::copy, b, 4 },
+#if !A
+			{ instr::copy, 0, 6 },
+			{ instr::copy, 1, c },
+			{ instr::copy, 2, b },
+#else
 			{ instr::req , 6 },
 			{ instr::req , c },
 			{ instr::req , b },
+			// { instr::load_local, 0, e },
+#endif
 		},
 		4,
-		10,
+		11,
 	};
 #endif
 #if 0
