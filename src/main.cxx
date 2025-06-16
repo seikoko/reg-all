@@ -335,6 +335,7 @@ code_t canonical(code_t const &code)
 		case instr::umul:
 			canon.emplace_back(instr{ instr::copy, 2, ins.rs1 });
 			canon.emplace_back(instr{ instr::umul, 2, 2, ins.rs2 });
+			canon.emplace_back(instr{ instr::clobber, 0, ins.rd });
 			canon.emplace_back(instr{ instr::copy, ins.rd, 2 });
 			break;
 		}
@@ -394,7 +395,7 @@ graph gen_graph(code_t const &code)
 			use(ins.rs2, i);
 			break;
 		case instr::store:
-			def(ins.rd, i);
+			use(ins.rd, i);
 			use(ins.rs1, i);
 			break;
 		case instr::store_local:
