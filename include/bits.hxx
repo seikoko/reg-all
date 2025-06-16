@@ -67,7 +67,7 @@ namespace bits {
 			delete[] ptr;
 		}
 
-		bits::lazy lazy(size_t bit = 0)
+		bits::lazy lazy(size_t bit = 0) const
 		{
 			assert(bit2idx(bit) < size);
 			return { ptr + bit2idx(bit) };
