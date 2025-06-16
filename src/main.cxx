@@ -134,6 +134,17 @@ bitset<T, bits> operator|(bitset<T, bits> const &lhs, bitset<T, bits> const &rhs
 	return res;
 }
 
+// TODO: easily vectorizable
+template <typename T, size_t bits>
+bitset<T, bits> operator~(bitset<T, bits> const &lhs)
+{
+	bitset<T, bits> res(lhs.elems);
+	for (size_t i = 0; i < lhs.data.size(); ++i) {
+		res.data[i] = ~lhs.data[i];
+	}
+	return res;
+}
+
 template <typename T, size_t bits>
 T bitset<T, bits>::operator[](std::uint32_t i) const
 {
@@ -210,30 +221,31 @@ bool bitset<T, bits>::zero() const
 
 struct graph
 {
-	enum interference { I_FREE = 0, I_MOVE = 1, I_NONMOVE = 2 /* or 3 */ };
-	static bool is_free(interference i) { return i == I_FREE; }
-	static bool is_move(interference i) { return i == I_MOVE; }
-	static bool is_nonmove(interference i) { return i >= I_NONMOVE; }
-
-	std::vector<bitset<interference, 2>> madj;
-
-	enum state { S_VISIBLE = 0, S_FROZEN = 1, S_HIDDEN = 2 };
-	bitset<state, 2> removed;
+	std::vector<bitset<bool, 1>> nonmove_;
+	std::vector<bitset<bool, 1>> move_;
+	bitset<bool, 1> removed;
+	bitset<bool, 1> frozen;
 
 	graph(reg count);
 
-	void link(reg s, reg t, interference i);
-	interference linked(reg s, reg t) const;
+	void nonmove(reg s, reg t);
+	void move(reg s, reg t);
 	void remove(reg s);
-	bool has(reg s) const;
+	void freeze(reg s);
+
+	bool is_free(reg s, reg t) const;
+	bool is_move(reg s, reg t) const;
+	bool is_nonmove(reg s, reg t) const;
+	bool is_frozen(reg s) const;
+	bool is_live(reg s) const;
 	reg order() const;
 	reg deg(reg s) const;
-	bool nonmove(reg s) const;
+	bool is_nonmove(reg s) const;
 	reg move_related(reg s) const;
 };
 
 graph::graph(reg count)
-	: madj(count, count), removed(count)
+	: nonmove_(count, count), move_(count, count), removed(count), frozen(count)
 {
 }
 
@@ -242,34 +254,48 @@ reg graph::order() const
 	return removed.elems;
 }
 
-void graph::link(reg s, reg t, interference i)
+void graph::nonmove(reg s, reg t)
 {
-	// assert(i != NONMOVE || linked(s, t) != I_NONMOVE);
-	madj[s].acc(t, i);
-	madj[t].acc(s, i);
+	nonmove_[s].set(t, true);
+	nonmove_[t].set(s, true);
 }
 
-graph::interference graph::linked(reg s, reg t) const
+void graph::move(reg s, reg t)
 {
-	return madj[s][t];
+	move_[s].set(t, true);
+	move_[t].set(s, true);
+}
+
+bool graph::is_free(reg s, reg t) const
+{
+	return !move_[s][t] & !nonmove_[s][t];
+}
+
+bool graph::is_move(reg s, reg t) const
+{
+	return move_[s][t] & !is_nonmove(s, t);
+}
+
+bool graph::is_nonmove(reg s, reg t) const
+{
+	return nonmove_[s][t];
 }
 
 void graph::remove(reg s)
 {
-	// assert(removed[s] != S_HIDDEN);
-	removed.set(s, S_HIDDEN);
+	removed.set(s, true);
 }
 
-bool graph::has(reg s) const
+void graph::freeze(reg s)
 {
-	return removed[s] == S_VISIBLE;
+	frozen.set(s, true);
 }
 
 reg graph::deg(reg s) const
 {
 	reg d = 0;
 	for (reg t = 0; t < order(); ++t) {
-		if (has(t) && linked(s, t))
+		if (is_live(t) && !is_free(s, t))
 			++d;
 	}
 	return d;
@@ -279,15 +305,25 @@ reg graph::move_related(reg s) const
 {
 	reg m = 0;
 	for (reg t = 0; t < order(); ++t) {
-		if (has(t) && is_move(linked(s, t)))
+		if (is_live(t) && is_move(s, t))
 			++m;
 	}
 	return m;
 }
 
-bool graph::nonmove(reg s) const
+bool graph::is_nonmove(reg s) const
 {
-	return removed[s] == S_FROZEN || (removed[s] == S_VISIBLE && !move_related(s));
+	return is_live(s) && (is_frozen(s) || !move_related(s));
+}
+
+bool graph::is_frozen(reg s) const
+{
+	return frozen[s];
+}
+
+bool graph::is_live(reg s) const
+{
+	return !removed[s];
 }
 
 template <typename T>
@@ -361,20 +397,20 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 std::ostream &operator<<(std::ostream &os, graph const &g)
 {
 	for (reg r = 0; r < g.order(); ++r) {
-		if (g.removed[r] & graph::S_HIDDEN)
+		if (!g.is_live(r))
 			continue;
-		os << " F"[g.removed[r]];
+		os << (g.is_frozen(r) ? 'F': ' ');
 		os << r << "(d=" << g.deg(r) << ",m=" << g.move_related(r) << "): ";
 		bool first = true;
 		for (reg t = 0; t < g.order(); ++t) {
-			if (!g.linked(r, t) || !g.has(t))
+			if (!g.is_live(t) || g.is_free(r, t))
 				continue;
 			if (first) {
 				first = false;
 			} else {
 				os << " ";
 			}
-			os << " M ."[g.linked(r, t)] << t;
+			os << (g.is_move(r, t) ? 'M': ' ') << t;
 		}
 		os << '\n';
 	}
@@ -458,7 +494,7 @@ graph gen_graph(code_t const &code)
 	std::vector<bitset<bool, 1>> live(code.regs(), code.size() + 1);
 	const auto use = [&] (reg r, reg index) { live[r].acc(index, true); };
 	const auto def = [&] (reg r, reg index) { live[r].del(index, true); };
-	const auto clobber = [&] (reg virt, reg phys) { g.link(virt, phys, graph::I_NONMOVE); };
+	const auto clobber = [&] (reg virt, reg phys) { g.nonmove(virt, phys); };
 
 	static int _iter = 0;
 	std::cout << "iter #" << _iter++ << ":\n";
@@ -474,7 +510,7 @@ graph gen_graph(code_t const &code)
 		case instr::copy:
 			def(ins.rd , i);
 			use(ins.rs1, i);
-			g.link(ins.rd, ins.rs1, graph::I_MOVE);
+			g.move(ins.rd, ins.rs1);
 			break;
 		case instr::imm:
 		case instr::load_local:
@@ -498,10 +534,10 @@ graph gen_graph(code_t const &code)
 			use(ins.rd, i);
 			break;
 		case instr::def:
-			def(ins.rd, 0);
+			def(ins.rd, i);
 			break;
 		case instr::req:
-			use(ins.rd, code.size()-1);
+			use(ins.rd, i);
 			break;
 		case instr::clobber:
 			clobber(ins.rd, ins.rs1);
@@ -521,7 +557,7 @@ graph gen_graph(code_t const &code)
 	// render physical registers
 	for (reg t = 1; t < code.phys_regs; ++t) {
 		for (reg s = 0; s < t; ++s) {
-			g.link(s, t, graph::I_NONMOVE);
+			g.nonmove(s, t);
 		}
 	}
 	// render virtual registers' interference
@@ -529,7 +565,7 @@ graph gen_graph(code_t const &code)
 		for (reg s = 0; s < t; ++s) {
 			const auto overlap = live[s] & live[t];
 			if (!overlap.zero()) {
-				g.link(s, t, graph::I_NONMOVE);
+				g.nonmove(s, t);
 			}
 		}
 	}
@@ -551,7 +587,7 @@ void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 		// it could be more sophisticated
 		reg max_deg = 0;
 		for (reg r = 0; r < interference.order(); ++r) {
-			if (!interference.nonmove(r))
+			if (!interference.is_nonmove(r))
 				continue;
 			const auto deg = interference.deg(r);
 			if (deg < phys_regs) {
@@ -607,23 +643,19 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 		mapping[r] = r;
 	}
 	for (reg s = 0; s < interference.order(); ++s) {
-		if (!interference.has(s))
+		if (!interference.is_live(s))
 			continue;
 		for (reg t = s + 1; t < interference.order(); ++t) {
 			// anything >= s is unmapped
 			// anything <  s may be mapped
-			if (!interference.has(t) || !graph::is_move(interference.linked(s, t)))
+			if (!interference.is_live(t) || !interference.is_move(s, t))
 				continue;
-			auto neighbours = interference.madj[s] | interference.madj[t];
-			for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
-				reg r = mapping[unmapped_r];
-				if (!interference.has(r))
-					neighbours.set(r, graph::I_FREE);
-			}
-			neighbours.set(s, graph::I_FREE);
-			neighbours.set(t, graph::I_FREE);
-			// I_MOVE | I_NONMOVE
-			const auto deg = neighbours.filter_count(graph::interference(3));
+			auto neighbr_nonmove = (interference.nonmove_[s] | interference.nonmove_[t]) & ~interference.removed;
+			auto neighbr_move    = (interference.   move_[s] | interference.   move_[t]) & ~interference.removed;
+			auto neighbr = neighbr_nonmove | neighbr_move;
+			neighbr.del(s, true);
+			neighbr.del(t, true);
+			const auto deg = neighbr.filter_count(true);
 			// Briggs test
 			if (deg < code.phys_regs) {
 				// keep going
@@ -631,10 +663,9 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 				// George test
 				for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
 					reg r = mapping[unmapped_r];
-					assert(!interference.has(r) || (interference.linked(r, t) == interference.linked(t, r)));
-					if (!interference.has(r) || graph::is_free(interference.linked(r, t)))
+					if (!interference.is_live(r) || interference.is_free(r, t))
 						continue;
-					if (graph::is_free(interference.linked(r, s))
+					if (interference.is_free(r, s)
 					 && interference.deg(r) >= code.phys_regs)
 						goto next_iter;
 				}
@@ -645,10 +676,13 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 			stk->push(t);
 			for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
 				reg r = mapping[unmapped_r];
-				if (neighbours[r])
-					interference.link(r, s, neighbours[r]);
+				if (neighbr_nonmove[r])
+					interference.nonmove(r, s);
+				if (neighbr_move[r])
+					interference.move(r, s);
 			}
-			interference.madj[s] = neighbours;
+			interference.nonmove_[s] = neighbr_nonmove;
+			interference.   move_[s] =    neighbr_move;
 			_merged = *merged = true;
 		next_iter:
 			;
@@ -665,11 +699,11 @@ void freeze(graph &interference, reg phys_regs, bool *froze)
 {
 	bool _froze = false;
 	for (reg r = 0; r < interference.order(); ++r) {
-		if (!interference.has(r))
+		if (!interference.is_live(r))
 			continue;
 		const auto deg = interference.deg(r);
 		if (deg < phys_regs) {
-			interference.removed.acc(r, graph::S_FROZEN);
+			interference.freeze(r);
 			_froze = *froze = true;
 			break;
 		}
@@ -686,7 +720,7 @@ void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
 	reg max_deg = 0;
 	reg best = interference.order();
 	for (reg r = 0; r < interference.order(); ++r) {
-		if (interference.removed[r] == graph::S_HIDDEN)
+		if (!interference.is_live(r))
 			continue;
 		const auto deg = interference.deg(r);
 		if (deg > max_deg) {
@@ -722,8 +756,7 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 			continue;
 		for (reg t = 0; t < interference.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
-			int msk = interference.madj[s][t];
-			msk |= msk >> 1;
+			int msk = !interference.is_free(s, t);
 			free &= ~(reg(msk & bound[t]) << mapping[t]);
 		}
 		if (free) {
