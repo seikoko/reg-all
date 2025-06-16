@@ -6,6 +6,7 @@
 #include <climits>
 #include <vector>
 #include <cstdint>
+#include "bits.hxx"
 
 /*
  *
@@ -76,155 +77,17 @@ reg bit(reg r)
 	return reg{1} << r;
 }
 
-reg bits(reg r)
+size_t round_up(size_t from, size_t to)
 {
-	return bit(r) - 1;
-}
-
-template <typename T, size_t bits = sizeof(T) * CHAR_BIT>
-struct bitset
-{
-	using unit = std::uint32_t;
-	enum { unit_bits = sizeof(unit) * CHAR_BIT };
-	static_assert(bits <= unit_bits, "large bitfield not supported");
-
-	bitset(unit elems);
-	T operator[](unit i) const;
-	void set(unit i, T value);
-	void acc(unit i, T value);
-	void del(unit i, T value);
-	unit filter_count(T mask) const;
-	bool zero() const;
-
-	// TODO: make the structure non owning to be able to do the allocation
-	// as well as slicing the output
-	std::vector<unit> data;
-	unit elems;
-};
-
-template <typename T, size_t bits>
-bitset<T, bits>::bitset(unit elems)
-	: elems(elems)
-{
-	const auto units = (elems * bits + unit_bits - 1) / unit_bits;
-	data.assign(units, 0);
-}
-
-// TODO: easily vectorizable
-template <typename T, size_t bits>
-bitset<T, bits> operator&(bitset<T, bits> const &lhs, bitset<T, bits> const &rhs)
-{
-	assert(lhs.elems == rhs.elems);
-	bitset<T, bits> res(lhs.elems);
-	for (size_t i = 0; i < lhs.data.size(); ++i) {
-		res.data[i] = lhs.data[i] & rhs.data[i];
-	}
-	return res;
-}
-
-// TODO: easily vectorizable
-template <typename T, size_t bits>
-bitset<T, bits> operator|(bitset<T, bits> const &lhs, bitset<T, bits> const &rhs)
-{
-	assert(lhs.elems == rhs.elems);
-	bitset<T, bits> res(lhs.elems);
-	for (size_t i = 0; i < lhs.data.size(); ++i) {
-		res.data[i] = lhs.data[i] | rhs.data[i];
-	}
-	return res;
-}
-
-// TODO: easily vectorizable
-template <typename T, size_t bits>
-bitset<T, bits> operator~(bitset<T, bits> const &lhs)
-{
-	bitset<T, bits> res(lhs.elems);
-	for (size_t i = 0; i < lhs.data.size(); ++i) {
-		res.data[i] = ~lhs.data[i];
-	}
-	return res;
-}
-
-template <typename T, size_t bits>
-T bitset<T, bits>::operator[](std::uint32_t i) const
-{
-	assert(i < elems);
-	unit res = 0;
-	for (size_t b = 0; b < bits; ++b) {
-		size_t bit_idx = i + b * elems;
-		res |= (data[bit_idx / unit_bits] >> (bit_idx % unit_bits) & 1) << b;
-	}
-	return static_cast<T>(res);
-}
-
-template <typename T, size_t bits>
-void bitset<T, bits>::set(unit i, T _value)
-{
-	assert(i < elems);
-	unit value = _value;
-	for (size_t b = 0; b < bits; ++b) {
-		size_t bit_idx = i + b * elems;
-		data[bit_idx / unit_bits] &= ~(unit{1} << (bit_idx % unit_bits));
-		data[bit_idx / unit_bits] |= (value & 1) << (bit_idx % unit_bits);
-		value >>= 1;
-	}
-}
-
-template <typename T, size_t bits>
-void bitset<T, bits>::acc(unit i, T _value)
-{
-	assert(i < elems);
-	unit value = _value;
-	for (size_t b = 0; b < bits; ++b) {
-		size_t bit_idx = i + b * elems;
-		data[bit_idx / unit_bits] |= (value & 1) << (bit_idx % unit_bits);
-		value >>= 1;
-	}
-}
-
-template <typename T, size_t bits>
-void bitset<T, bits>::del(unit i, T _value)
-{
-	assert(i < elems);
-	unit value = _value;
-	for (size_t b = 0; b < bits; ++b) {
-		size_t bit_idx = i + b * elems;
-		data[bit_idx / unit_bits] &= ~((value & 1) << (bit_idx % unit_bits));
-		value >>= 1;
-	}
-}
-
-template <typename T, size_t bits>
-typename bitset<T, bits>::unit bitset<T, bits>::filter_count(T mask) const
-{
-	unit count = 0;
-	for (size_t i = 0; i < data.size(); ++i) {
-		unit filter = 0;
-		for (reg b = 0; b < bits; ++b) {
-			if (bit(b) & mask)
-				filter |= data[i + b * elems];
-		}
-		count += __builtin_popcount(filter);
-	}
-	return count;
-}
-
-template <typename T, size_t bits>
-bool bitset<T, bits>::zero() const
-{
-	for (size_t i = 0; i < data.size(); ++i) {
-		if (data[i])
-			return false;
-	}
-	return true;
+	return (from + to - 1) / to * to;
 }
 
 struct graph
 {
-	std::vector<bitset<bool, 1>> nonmove_;
-	std::vector<bitset<bool, 1>> move_;
-	bitset<bool, 1> removed;
-	bitset<bool, 1> frozen;
+	bits::managed nonmove_;
+	bits::managed move_;
+	bits::managed removed;
+	bits::managed frozen;
 
 	graph(reg count);
 
@@ -238,62 +101,71 @@ struct graph
 	bool is_nonmove(reg s, reg t) const;
 	bool is_frozen(reg s) const;
 	bool is_live(reg s) const;
-	reg order() const;
-	reg deg(reg s) const;
 	bool is_nonmove(reg s) const;
-	reg move_related(reg s) const;
+	size_t idx(reg s, reg t) const;
+	size_t order() const;
+	size_t deg(reg s) const;
+	size_t move_related(reg s) const;
 };
 
 graph::graph(reg count)
-	: nonmove_(count, count), move_(count, count), removed(count), frozen(count)
+	: nonmove_((count = round_up(count, bits::managed::unit_size()), count * count)),
+	  move_   (count * count),
+	  removed (count),
+	  frozen  (count)
 {
 }
 
-reg graph::order() const
+size_t graph::idx(reg s, reg t) const
 {
-	return removed.elems;
+	return s * order() + t;
+}
+
+size_t graph::order() const
+{
+	return removed.size * bits::managed::unit_size();
 }
 
 void graph::nonmove(reg s, reg t)
 {
-	nonmove_[s].set(t, true);
-	nonmove_[t].set(s, true);
+	nonmove_.set(idx(s, t));
+	nonmove_.set(idx(t, s));
 }
 
 void graph::move(reg s, reg t)
 {
-	move_[s].set(t, true);
-	move_[t].set(s, true);
+	move_.set(idx(s, t));
+	move_.set(idx(t, s));
 }
 
 bool graph::is_free(reg s, reg t) const
 {
-	return !move_[s][t] & !nonmove_[s][t];
+	return !is_move(s, t) & !is_nonmove(s, t);
 }
 
 bool graph::is_move(reg s, reg t) const
 {
-	return move_[s][t] & !is_nonmove(s, t);
+	return (move_[idx(s, t)] | move_[idx(t, s)]) & !is_nonmove(s, t);
 }
 
 bool graph::is_nonmove(reg s, reg t) const
 {
-	return nonmove_[s][t];
+	return nonmove_[idx(s, t)] | nonmove_[idx(t, s)];
 }
 
 void graph::remove(reg s)
 {
-	removed.set(s, true);
+	removed.set(s);
 }
 
 void graph::freeze(reg s)
 {
-	frozen.set(s, true);
+	frozen.set(s);
 }
 
-reg graph::deg(reg s) const
+size_t graph::deg(reg s) const
 {
-	reg d = 0;
+	size_t d = 0;
 	for (reg t = 0; t < order(); ++t) {
 		if (is_live(t) && !is_free(s, t))
 			++d;
@@ -301,9 +173,9 @@ reg graph::deg(reg s) const
 	return d;
 }
 
-reg graph::move_related(reg s) const
+size_t graph::move_related(reg s) const
 {
-	reg m = 0;
+	size_t m = 0;
 	for (reg t = 0; t < order(); ++t) {
 		if (is_live(t) && is_move(s, t))
 			++m;
@@ -348,16 +220,12 @@ std::ostream &operator<<(std::ostream &os, std::deque<T> const &q)
 	return os;
 }
 
-template <typename T, size_t bits>
-std::ostream &operator<<(std::ostream &os, bitset<T, bits> const &b)
+std::ostream &operator<<(std::ostream &os, bits::managed const &b)
 {
 	os << "| ";
-	for (typename bitset<T, bits>::unit i = 0; i < b.elems; ++i) {
+	for (size_t i = 0; i < b.size * bits::managed::unit_size(); ++i) {
 		if (b[i]) {
-			os << i;
-			if (bits > 1)
-				os << "." << b[i];
-			os << " ";
+			os << i << ' ';
 		}
 	}
 	os << "| ";
@@ -489,20 +357,23 @@ graph gen_graph(code_t const &code)
 	// you can allocate them seamlessly with
 	// copy r0, %edi; copy r1, %esi; copy r2, %edx;
 	// copy %eax, r3; copy %edx, r4;
-	graph g(code.regs());
+	const auto regs = code.regs();
+	const auto max_index = round_up(1+code.size(), bits::managed::unit_size());
+	graph g(regs);
 	// [definition, last use)
-	std::vector<bitset<bool, 1>> live(code.regs(), code.size() + 1);
-	const auto use = [&] (reg r, reg index) { live[r].acc(index, true); };
-	const auto def = [&] (reg r, reg index) { live[r].del(index, true); };
+	bits::managed live(regs * max_index);
+	const auto idx = [&] (reg r, size_t index) { return r * max_index + index; };
+	const auto use = [&] (reg r, size_t index) { live.set  (idx(r, index)); };
+	const auto def = [&] (reg r, size_t index) { live.clear(idx(r, index)); };
 	const auto clobber = [&] (reg virt, reg phys) { g.nonmove(virt, phys); };
 
 	static int _iter = 0;
 	std::cout << "iter #" << _iter++ << ":\n";
 
-	reg i = code.size() - 1;
+	size_t i = code.size() - 1;
 	do {
-		for (reg r = 0; r < code.regs(); ++r) {
-			live[r].set(i, live[r][i+1]);
+		for (reg r = 0; r < regs; ++r) {
+			live.assign(idx(r, i), live[ idx(r, i+1) ]);
 		}
 
 		const auto ins = code[i];
@@ -546,10 +417,10 @@ graph gen_graph(code_t const &code)
 	} while (i--);
 
 	for (reg i = 0; i < code.size(); ++i) {
-		bitset<bool, 1> _live(code.regs());
-		for (reg r = 0; r < code.regs(); ++r) {
-			if (live[r][i])
-				_live.acc(r, true);
+		bits::managed _live(regs);
+		for (reg r = 0; r < regs; ++r) {
+			if (live[idx(r, i)])
+				_live.set(r);
 		}
 		std::cout << i << ": " << _live << code[i];
 	}
@@ -561,10 +432,11 @@ graph gen_graph(code_t const &code)
 		}
 	}
 	// render virtual registers' interference
-	for (reg t = 0; t < code.regs(); ++t) {
+	const auto units = max_index / bits::managed::unit_size();
+	for (reg t = 0; t < regs; ++t) {
 		for (reg s = 0; s < t; ++s) {
-			const auto overlap = live[s] & live[t];
-			if (!overlap.zero()) {
+			const auto overlap = live.lazy(idx(s, 0)) & live.lazy(idx(t, 0));
+			if (bits::reduce_or(overlap).eval(units)) {
 				g.nonmove(s, t);
 			}
 		}
@@ -575,21 +447,21 @@ graph gen_graph(code_t const &code)
 	return g;
 }
 
-void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
+void strip(graph &interf, reg phys_regs, stack<reg> *stk, bool *stripped)
 {
 	bool _stripped = false;
 	while (true) {
 		// find any node of insignificant degree
 		// default with an impossible value
-		reg chosen_reg = static_cast<reg>(interference.order());
+		reg chosen_reg = static_cast<reg>(interf.order());
 		// else find a node to spill
 		// here the heuristic selects the max degree
 		// it could be more sophisticated
-		reg max_deg = 0;
-		for (reg r = 0; r < interference.order(); ++r) {
-			if (!interference.is_nonmove(r))
+		size_t max_deg = 0;
+		for (reg r = 0; r < interf.order(); ++r) {
+			if (!interf.is_nonmove(r))
 				continue;
-			const auto deg = interference.deg(r);
+			const auto deg = interf.deg(r);
 			if (deg < phys_regs) {
 				chosen_reg = r;
 				break;
@@ -598,16 +470,15 @@ void strip(graph &interference, reg phys_regs, stack<reg> *stk, bool *stripped)
 				max_deg = deg;
 			}
 		}
-		if (chosen_reg == interference.order()) break;
+		if (chosen_reg == interf.order()) break;
 		stk->push(chosen_reg);
-		// TODO: potential optimization : just set interference.deg(r) = virt_regs+1 so removed nodes are never selected
-		interference.remove(chosen_reg);
+		interf.remove(chosen_reg);
 		_stripped = *stripped = true;
 	}
 
 	std::cout << "strip:\n";
 	if (_stripped)
-		std::cout << interference << *stk;
+		std::cout << interf << *stk;
 }
 
 void remap(code_t &code, std::vector<reg> const &mapping)
@@ -635,54 +506,50 @@ void remap(code_t &code, std::vector<reg> const &mapping)
 	}
 }
 
-void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
+void merge(graph &interf, code_t &code, stack<reg> *stk, bool *merged)
 {
 	bool _merged = false;
-	std::vector<reg> mapping(interference.order());
+	const auto order = interf.order();
+	const auto units = order / bits::managed::unit_size();
+	std::vector<reg> mapping(order);
 	for (reg r = 0; r < mapping.size(); ++r) {
 		mapping[r] = r;
 	}
-	for (reg s = 0; s < interference.order(); ++s) {
-		if (!interference.is_live(s))
+	for (reg s = 0; s < order; ++s) {
+		if (!interf.is_live(s))
 			continue;
-		for (reg t = s + 1; t < interference.order(); ++t) {
+		for (reg t = s + 1; t < order; ++t) {
 			// anything >= s is unmapped
 			// anything <  s may be mapped
-			if (!interference.is_live(t) || !interference.is_move(s, t))
+			if (!interf.is_live(t) || !interf.is_move(s, t))
 				continue;
-			auto neighbr_nonmove = (interference.nonmove_[s] | interference.nonmove_[t]) & ~interference.removed;
-			auto neighbr_move    = (interference.   move_[s] | interference.   move_[t]) & ~interference.removed;
-			auto neighbr = neighbr_nonmove | neighbr_move;
-			neighbr.del(s, true);
-			neighbr.del(t, true);
-			const auto deg = neighbr.filter_count(true);
+			const auto neighbr_nonmove = interf.nonmove_.lazy(interf.idx(s, 0)) | interf.nonmove_.lazy(interf.idx(t, 0));
+			const auto neighbr_move    = interf.   move_.lazy(interf.idx(s, 0)) | interf.   move_.lazy(interf.idx(t, 0));
+			const auto neighbr         = (neighbr_nonmove | neighbr_move) & ~interf.removed.lazy();
+			const auto deg = bits::count(neighbr);
+
+			const auto s_unit = interf.idx(s, 0) / bits::managed::unit_size();
 			// Briggs test
-			if (deg < code.phys_regs) {
+			if (deg.eval(units) - 2 /* s and t */ < code.phys_regs) {
 				// keep going
 			} else {
 				// George test
-				for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
+				for (reg unmapped_r = 0; unmapped_r < order; ++unmapped_r) {
 					reg r = mapping[unmapped_r];
-					if (!interference.is_live(r) || interference.is_free(r, t))
+					if (!interf.is_live(r) || interf.is_free(r, t))
 						continue;
-					if (interference.is_free(r, s)
-					 && interference.deg(r) >= code.phys_regs)
+					if (interf.is_free(r, s)
+					 && interf.deg(r) >= code.phys_regs)
 						goto next_iter;
 				}
 			}
 			// small reg takes over large reg
+			// with the mapping, t is GONE gone
 			mapping[t] = s;
-			interference.remove(t);
-			stk->push(t);
-			for (reg unmapped_r = 0; unmapped_r < interference.order(); ++unmapped_r) {
-				reg r = mapping[unmapped_r];
-				if (neighbr_nonmove[r])
-					interference.nonmove(r, s);
-				if (neighbr_move[r])
-					interference.move(r, s);
-			}
-			interference.nonmove_[s] = neighbr_nonmove;
-			interference.   move_[s] =    neighbr_move;
+			interf.remove(t);
+			neighbr_nonmove.eval(units, &interf.nonmove_.ptr[s_unit]);
+			neighbr_move   .eval(units, &interf.move_   .ptr[s_unit]);
+			interf.move_.clear(interf.idx(s, s));
 			_merged = *merged = true;
 		next_iter:
 			;
@@ -692,18 +559,18 @@ void merge(graph &interference, code_t &code, stack<reg> *stk, bool *merged)
 
 	std::cout << "merge:\n";
 	if (_merged)
-		std::cout << interference << *stk << mapping << code;
+		std::cout << interf << *stk << mapping << code;
 }
 
-void freeze(graph &interference, reg phys_regs, bool *froze)
+void freeze(graph &interf, reg phys_regs, bool *froze)
 {
 	bool _froze = false;
-	for (reg r = 0; r < interference.order(); ++r) {
-		if (!interference.is_live(r))
+	for (reg r = 0; r < interf.order(); ++r) {
+		if (!interf.is_live(r))
 			continue;
-		const auto deg = interference.deg(r);
+		const auto deg = interf.deg(r);
 		if (deg < phys_regs) {
-			interference.freeze(r);
+			interf.freeze(r);
 			_froze = *froze = true;
 			break;
 		}
@@ -711,57 +578,57 @@ void freeze(graph &interference, reg phys_regs, bool *froze)
 
 	std::cout << "freeze:\n";
 	if (_froze)
-		std::cout << interference;
+		std::cout << interf;
 }
 
-void evict(graph &interference, reg phys_regs, stack<reg> *stk, bool *acted)
+void evict(graph &interf, reg phys_regs, stack<reg> *stk, bool *acted)
 {
 	bool _evicted = false;
-	reg max_deg = 0;
-	reg best = interference.order();
-	for (reg r = 0; r < interference.order(); ++r) {
-		if (!interference.is_live(r))
+	size_t max_deg = 0;
+	reg best = interf.order();
+	for (reg r = 0; r < interf.order(); ++r) {
+		if (!interf.is_live(r))
 			continue;
-		const auto deg = interference.deg(r);
+		const auto deg = interf.deg(r);
 		if (deg > max_deg) {
 			max_deg = deg;
 			best = r;
 		}
 	}
-	if (best != interference.order()) {
+	if (best != interf.order()) {
 		stk->push(best);
-		interference.remove(best);
+		interf.remove(best);
 		_evicted = *acted = true;
 	}
 
 	std::cout << "evict:\n";
 	if (_evicted)
-		std::cout << interference << *stk;
+		std::cout << interf << *stk;
 }
 
-std::vector<reg> select(graph const &interference, stack<reg> stk,
-		reg phys_regs, bool *spilled, bitset<bool, 1> &bound)
+std::vector<reg> select(graph const &interf, stack<reg> stk,
+		reg phys_regs, bool *spilled, bits::managed &bound)
 {
-	auto mapping = std::vector<reg>(interference.order());
+	auto mapping = std::vector<reg>(interf.order());
 	for (reg phys = 0; phys < phys_regs; ++phys) {
 		mapping[phys] = phys;
-		bound.acc(phys, true);
+		bound.set(phys);
 	}
 	while (!stk.empty()) {
 		const auto s = stk.pop();
 		// represents a mask of free registers relative to neighbors
-		reg free = bits(phys_regs);
+		reg free = bit(phys_regs) - 1;
 		assert(sizeof(free) * CHAR_BIT >= phys_regs);
 		if (bound[s])
 			continue;
-		for (reg t = 0; t < interference.order(); ++t) {
+		for (reg t = 0; t < interf.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
-			int msk = !interference.is_free(s, t);
+			int msk = !interf.is_free(s, t);
 			free &= ~(reg(msk & bound[t]) << mapping[t]);
 		}
 		if (free) {
 			mapping[s] = some_bit_index(free);
-			bound.acc(s, true);
+			bound.set(s);
 			assert(mapping[s] < CHAR_BIT * sizeof(reg));
 		} else {
 			*spilled = true;
@@ -774,7 +641,7 @@ std::vector<reg> select(graph const &interference, stack<reg> stk,
 	return mapping;
 }
 
-code_t rewrite(code_t const &code, bitset<bool, 1> const &bound)
+code_t rewrite(code_t const &code, bits::managed const &bound)
 {
 	code_t next_code = { {}, code.phys_regs, code.virt_regs };
 	enum usage { use = 0, def = 1 };
@@ -842,23 +709,22 @@ std::vector<reg> gcolor(code_t &code)
 	code = canonical(code);
 	std::vector<reg> offsets(code.virt_regs);
 	while (true) {
-		auto interference = gen_graph(code);
+		auto interf = gen_graph(code);
 		stack<reg> stk;
 		bool acted;
 		do {
 			do {
 				do {
 					acted = false;
-					strip(interference, code.phys_regs, &stk, &acted);
-					merge(interference, code, &stk, &acted);
+					strip(interf, code.phys_regs, &stk, &acted);
+					merge(interf, code, &stk, &acted);
 				} while (acted);
-				freeze(interference, code.phys_regs, &acted);
+				freeze(interf, code.phys_regs, &acted);
 			} while (acted);
-			evict(interference, code.phys_regs, &stk, &acted);
+			evict(interf, code.phys_regs, &stk, &acted);
 		} while (acted);
-		assert(stk.size() >= code.virt_regs);
-		bitset<bool, 1> bound(code.regs());
-		const auto color = select(interference, std::move(stk), code.phys_regs, &acted, bound);
+		bits::managed bound(code.regs());
+		const auto color = select(interf, std::move(stk), code.phys_regs, &acted, bound);
 		remap(code, color);
 		// TODO: apply a spill-less graph coloring to spilled nodes to debloat the graph
 		// strip->merge(no degree tests) cycle ->select
