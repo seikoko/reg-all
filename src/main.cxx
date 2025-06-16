@@ -145,12 +145,12 @@ bool graph::is_free(reg s, reg t) const
 
 bool graph::is_move(reg s, reg t) const
 {
-	return (move_[idx(s, t)] | move_[idx(t, s)]) & !is_nonmove(s, t);
+	return move_[idx(s, t)] & !is_nonmove(s, t);
 }
 
 bool graph::is_nonmove(reg s, reg t) const
 {
-	return nonmove_[idx(s, t)] | nonmove_[idx(t, s)];
+	return nonmove_[idx(s, t)];
 }
 
 void graph::remove(reg s)
@@ -165,22 +165,18 @@ void graph::freeze(reg s)
 
 size_t graph::deg(reg s) const
 {
-	size_t d = 0;
-	for (reg t = 0; t < order(); ++t) {
-		if (is_live(t) && !is_free(s, t))
-			++d;
-	}
-	return d;
+	const auto offs = idx(s, 0);
+	return bits::count(
+		( move_.lazy(offs) | nonmove_.lazy(offs) ) & ~removed.lazy()
+	).eval(order() / bits::managed::unit_size());
 }
 
 size_t graph::move_related(reg s) const
 {
-	size_t m = 0;
-	for (reg t = 0; t < order(); ++t) {
-		if (is_live(t) && is_move(s, t))
-			++m;
-	}
-	return m;
+	const auto offs = idx(s, 0);
+	return bits::count(
+		move_.lazy(offs) & ~(nonmove_.lazy(offs) | removed.lazy())
+	).eval(order() / bits::managed::unit_size());
 }
 
 bool graph::is_nonmove(reg s) const
