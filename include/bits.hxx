@@ -6,13 +6,17 @@
 
 namespace bits {
 
+	using Unit = std::uint32_t;
+	static constexpr auto unit_bits = CHAR_BIT * sizeof(Unit);
+
 	namespace impl {
 		using std::size_t;
 
 		template <typename Expr, typename Output>
 		struct full {
-			constexpr auto eval(size_t size, Output dest) const {
-				for (size_t i = size_t(0); i < size; ++i, ++dest) {
+			constexpr auto eval(size_t nbits, Output dest) const {
+				const auto size = (nbits + unit_bits - 1) / unit_bits;
+				for (size_t i(0); i < size; ++i, ++dest) {
 					*dest = static_cast<Expr const&>(*this).partial(i);
 				}
 			}
@@ -20,9 +24,10 @@ namespace bits {
 
 		template <typename Expr>
 		struct reduce {
-			constexpr auto eval(size_t size) const {
+			constexpr auto eval(size_t nbits) const {
 				auto accum = Expr::neutral;
-				for (size_t i = size_t(0); i < size; ++i) {
+				const auto size = (nbits + unit_bits - 1) / unit_bits;
+				for (size_t i(0); i < size; ++i) {
 					accum = static_cast<Expr const&>(*this).partial(i, std::move(accum));
 				}
 				return accum;
@@ -30,8 +35,6 @@ namespace bits {
 		};
 
 	}
-
-	using Unit = std::uint64_t;
 
 	struct lazy : impl::full<lazy, Unit*> {
 		Unit *data;
@@ -65,6 +68,12 @@ namespace bits {
 		{
 			memset(ptr, 0xbe, size * sizeof *ptr);
 			delete[] ptr;
+		}
+
+		Unit *slice(size_t bit)
+		{
+			assert(bit2idx(bit) < size);
+			return ptr + bit2idx(bit);
 		}
 
 		bits::lazy lazy(size_t bit = 0) const

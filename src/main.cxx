@@ -123,7 +123,7 @@ size_t graph::idx(reg s, reg t) const
 
 size_t graph::order() const
 {
-	return removed.size * bits::managed::unit_size();
+	return removed.size * bits::unit_bits;
 }
 
 void graph::nonmove(reg s, reg t)
@@ -168,7 +168,7 @@ size_t graph::deg(reg s) const
 	const auto offs = idx(s, 0);
 	return bits::count(
 		( move_.lazy(offs) | nonmove_.lazy(offs) ) & ~removed.lazy()
-	).eval(order() / bits::managed::unit_size());
+	).eval(order());
 }
 
 size_t graph::move_related(reg s) const
@@ -176,7 +176,7 @@ size_t graph::move_related(reg s) const
 	const auto offs = idx(s, 0);
 	return bits::count(
 		move_.lazy(offs) & ~(nonmove_.lazy(offs) | removed.lazy())
-	).eval(order() / bits::managed::unit_size());
+	).eval(order());
 }
 
 bool graph::is_nonmove(reg s) const
@@ -219,7 +219,7 @@ std::ostream &operator<<(std::ostream &os, std::deque<T> const &q)
 std::ostream &operator<<(std::ostream &os, bits::managed const &b)
 {
 	os << "| ";
-	for (size_t i = 0; i < b.size * bits::managed::unit_size(); ++i) {
+	for (size_t i = 0; i < b.size * bits::unit_bits; ++i) {
 		if (b[i]) {
 			os << i << ' ';
 		}
@@ -355,7 +355,7 @@ graph gen_graph(code_t const &code)
 	// copy r0, %edi; copy r1, %esi; copy r2, %edx;
 	// copy %eax, r3; copy %edx, r4;
 	const auto regs = code.regs();
-	const auto max_index = round_up(1+code.size(), bits::managed::unit_size());
+	const auto max_index = round_up(1+code.size(), bits::unit_bits);
 	graph g(regs);
 	// [definition, last use)
 	bits::managed live(regs * max_index);
@@ -429,11 +429,10 @@ graph gen_graph(code_t const &code)
 		}
 	}
 	// render virtual registers' interference
-	const auto units = max_index / bits::managed::unit_size();
 	for (reg t = 0; t < regs; ++t) {
 		for (reg s = 0; s < t; ++s) {
 			const auto overlap = live.lazy(idx(s, 0)) & live.lazy(idx(t, 0));
-			if (bits::reduce_or(overlap).eval(units)) {
+			if (bits::reduce_or(overlap).eval(max_index)) {
 				g.nonmove(s, t);
 			}
 		}
@@ -507,7 +506,6 @@ void merge(graph &interf, code_t &code, stack<reg> *stk, bool *merged)
 {
 	bool _merged = false;
 	const auto order = interf.order();
-	const auto units = order / bits::managed::unit_size();
 	std::vector<reg> mapping(order);
 	for (reg r = 0; r < mapping.size(); ++r) {
 		mapping[r] = r;
@@ -525,9 +523,8 @@ void merge(graph &interf, code_t &code, stack<reg> *stk, bool *merged)
 			const auto neighbr         = (neighbr_nonmove | neighbr_move) & ~interf.removed.lazy();
 			const auto deg = bits::count(neighbr);
 
-			const auto s_unit = interf.idx(s, 0) / bits::managed::unit_size();
 			// Briggs test
-			if (deg.eval(units) - 2 /* s and t */ < code.phys_regs) {
+			if (deg.eval(order) - 2 /* s and t */ < code.phys_regs) {
 				// keep going
 			} else {
 				// George test
@@ -544,8 +541,8 @@ void merge(graph &interf, code_t &code, stack<reg> *stk, bool *merged)
 			// with the mapping, t is GONE gone
 			mapping[t] = s;
 			interf.remove(t);
-			neighbr_nonmove.eval(units, &interf.nonmove_.ptr[s_unit]);
-			neighbr_move   .eval(units, &interf.move_   .ptr[s_unit]);
+			neighbr_nonmove.eval(order, interf.nonmove_.slice(interf.idx(s, 0)));
+			neighbr_move   .eval(order, interf.   move_.slice(interf.idx(s, 0)));
 			interf.move_.clear(interf.idx(s, s));
 			_merged = *merged = true;
 		next_iter:
