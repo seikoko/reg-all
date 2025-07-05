@@ -183,7 +183,11 @@ size_t graph::move_related(reg s) const
 
 bool graph::is_nonmove(reg s) const
 {
-	return is_live(s) && (is_frozen(s) || !move_related(s));
+	const auto offs = idx(s, 0);
+	const auto move_related = bits::reduce_or(
+		move_.lazy(offs) & ~(nonmove_.lazy(offs) | removed.lazy())
+	);
+	return is_live(s) & (is_frozen(s) | (move_related.eval(order()) == 0));
 }
 
 bool graph::is_frozen(reg s) const
