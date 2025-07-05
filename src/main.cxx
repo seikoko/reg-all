@@ -140,17 +140,21 @@ void graph::move(reg s, reg t)
 
 bool graph::is_free(reg s, reg t) const
 {
-	return !is_move(s, t) & !is_nonmove(s, t);
+	return !is_nonmove(s, t);
 }
 
 bool graph::is_move(reg s, reg t) const
 {
-	return move_[idx(s, t)] & !is_nonmove(s, t);
+	return move_[idx(t, s)] & !is_nonmove(s, t);
 }
 
 bool graph::is_nonmove(reg s, reg t) const
 {
-	return nonmove_[idx(s, t)];
+	// because merge doesn't update recursively,
+	// if A->X and Am>Bm>C
+	// then B->X and C->X
+	// but in general ~(X->C)
+	return nonmove_[idx(s, t)] | nonmove_[idx(t, s)];
 }
 
 void graph::remove(reg s)
@@ -166,9 +170,7 @@ void graph::freeze(reg s)
 size_t graph::deg(reg s) const
 {
 	const auto offs = idx(s, 0);
-	return bits::count(
-		( move_.lazy(offs) | nonmove_.lazy(offs) ) & ~removed.lazy()
-	).eval(order());
+	return bits::count(nonmove_.lazy(offs) & ~removed.lazy()).eval(order());
 }
 
 size_t graph::move_related(reg s) const
@@ -200,6 +202,19 @@ std::ostream &operator<<(std::ostream &os, std::vector<T> const &v)
 	os << "{\n";
 	for (size_t i = 0; i < v.size(); ++i) {
 		os << " " << i << ":" << v[i];
+	}
+	os << "}\n";
+	return os;
+}
+
+template<>
+std::ostream &operator<<(std::ostream &os, std::vector<reg> const &v)
+{
+	os << "{\n";
+	for (size_t i = 0; i < v.size(); ++i) {
+		if (i != v[i]) {
+			os << " " << i << ":" << v[i];
+		}
 	}
 	os << "}\n";
 	return os;
@@ -267,7 +282,7 @@ static std::ostream &operator<<(std::ostream &os, graph const &g)
 		os << r << "(d=" << g.deg(r) << ",m=" << g.move_related(r) << "): ";
 		bool first = true;
 		for (reg t = 0; t < g.order(); ++t) {
-			if (!g.is_live(t) || g.is_free(r, t))
+			if (!g.is_live(t) || (!g.is_nonmove(r, t) && !g.is_move(r, t)))
 				continue;
 			if (first) {
 				first = false;
@@ -362,7 +377,16 @@ graph gen_graph(code_t const &code)
 	const auto idx = [&] (reg r, size_t index) { return r * max_index + index; };
 	const auto use = [&] (reg r, size_t index) { live.set  (idx(r, index)); };
 	const auto def = [&] (reg r, size_t index) { live.clear(idx(r, index)); };
-	const auto clobber = [&] (reg virt, reg phys) { g.nonmove(virt, phys); };
+	const auto clobber = [&] (reg r, size_t index)
+	{
+		// smear until next write
+		for (size_t i = index+1;; ++i) {
+			const auto written = live[idx(r, i)];
+			if (written | (i == code.regs()))
+				break;
+			live.set(idx(r, i));
+		}
+	};
 
 #ifndef NDEBUG
 	static int _iter = 0;
@@ -410,7 +434,7 @@ graph gen_graph(code_t const &code)
 			use(ins.rd, i);
 			break;
 		case instr::clobber:
-			clobber(ins.rd, ins.rs1);
+			clobber(ins.rd, i);
 			break;
 		}
 	} while (i--);
@@ -528,11 +552,11 @@ void merge(graph &interf, code_t &code, stack<reg> *stk, bool *merged)
 				continue;
 			const auto neighbr_nonmove = interf.nonmove_.lazy(interf.idx(s, 0)) | interf.nonmove_.lazy(interf.idx(t, 0));
 			const auto neighbr_move    = interf.   move_.lazy(interf.idx(s, 0)) | interf.   move_.lazy(interf.idx(t, 0));
-			const auto neighbr         = (neighbr_nonmove | neighbr_move) & ~interf.removed.lazy();
+			const auto neighbr         = neighbr_nonmove & ~interf.removed.lazy();
 			const auto deg = bits::count(neighbr);
 
 			// Briggs test
-			if (deg.eval(order) - 2 /* s and t */ < code.phys_regs) {
+			if (deg.eval(order) < code.phys_regs) {
 				// keep going
 			} else {
 				// George test
@@ -631,7 +655,7 @@ std::vector<reg> select(graph const &interf, stack<reg> stk,
 			continue;
 		for (reg t = 0; t < interf.order(); ++t) {
 			// clears a bit corresponding to a register that is already mapped
-			int msk = !interf.is_free(s, t);
+			int msk = interf.is_nonmove(s, t);
 			free &= ~(reg(msk & bound[t]) << mapping[t]);
 		}
 		if (free) {
@@ -756,8 +780,8 @@ int main()
 			{ instr::copy, e, 3 },
 			{ instr::def , 0 },
 			{ instr::def , 1 },
-			{ instr::copy, c, 0 },
 			{ instr::copy, b, 1 },
+			{ instr::copy, c, 0 },
 			{ instr::load, 9, b },
 			{ instr::add , a, c, 9 },
 			{ instr::add , 8, 9, a },
