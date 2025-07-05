@@ -228,7 +228,7 @@ std::ostream &operator<<(std::ostream &os, bits::managed const &b)
 	return os;
 }
 
-std::ostream &operator<<(std::ostream &os, instr const &ins)
+static std::ostream &operator<<(std::ostream &os, instr const &ins)
 {
 	switch (ins.opcode) {
 	case instr::def:
@@ -258,7 +258,7 @@ std::ostream &operator<<(std::ostream &os, instr const &ins)
 	}
 }
 
-std::ostream &operator<<(std::ostream &os, graph const &g)
+static std::ostream &operator<<(std::ostream &os, graph const &g)
 {
 	for (reg r = 0; r < g.order(); ++r) {
 		if (!g.is_live(r))
@@ -364,8 +364,10 @@ graph gen_graph(code_t const &code)
 	const auto def = [&] (reg r, size_t index) { live.clear(idx(r, index)); };
 	const auto clobber = [&] (reg virt, reg phys) { g.nonmove(virt, phys); };
 
+#ifndef NDEBUG
 	static int _iter = 0;
 	std::cout << "iter #" << _iter++ << ":\n";
+#endif
 
 	size_t i = code.size() - 1;
 	do {
@@ -413,6 +415,7 @@ graph gen_graph(code_t const &code)
 		}
 	} while (i--);
 
+#ifndef NDEBUG
 	for (reg i = 0; i < code.size(); ++i) {
 		bits::managed _live(regs);
 		for (reg r = 0; r < regs; ++r) {
@@ -421,6 +424,7 @@ graph gen_graph(code_t const &code)
 		}
 		std::cout << i << ": " << _live << code[i];
 	}
+#endif
 
 	// render physical registers
 	for (reg t = 1; t < code.phys_regs; ++t) {
@@ -438,7 +442,9 @@ graph gen_graph(code_t const &code)
 		}
 	}
 
+#ifndef NDEBUG
 	std::cout << "graph:\n" << g << std::endl;
+#endif
 
 	return g;
 }
@@ -472,9 +478,11 @@ void strip(graph &interf, reg phys_regs, stack<reg> *stk, bool *stripped)
 		_stripped = *stripped = true;
 	}
 
+#ifndef NDEBUG
 	std::cout << "strip:\n";
 	if (_stripped)
 		std::cout << interf << *stk;
+#endif
 }
 
 void remap(code_t &code, std::vector<reg> const &mapping)
@@ -551,9 +559,11 @@ void merge(graph &interf, code_t &code, stack<reg> *stk, bool *merged)
 	}
 	remap(code, mapping);
 
+#ifndef NDEBUG
 	std::cout << "merge:\n";
 	if (_merged)
 		std::cout << interf << *stk << mapping << code;
+#endif
 }
 
 void freeze(graph &interf, reg phys_regs, bool *froze)
@@ -570,9 +580,11 @@ void freeze(graph &interf, reg phys_regs, bool *froze)
 		}
 	}
 
+#ifndef NDEBUG
 	std::cout << "freeze:\n";
 	if (_froze)
 		std::cout << interf;
+#endif
 }
 
 void evict(graph &interf, reg phys_regs, stack<reg> *stk, bool *acted)
@@ -595,9 +607,11 @@ void evict(graph &interf, reg phys_regs, stack<reg> *stk, bool *acted)
 		_evicted = *acted = true;
 	}
 
+#ifndef NDEBUG
 	std::cout << "evict:\n";
 	if (_evicted)
 		std::cout << interf << *stk;
+#endif
 }
 
 std::vector<reg> select(graph const &interf, stack<reg> stk,
@@ -630,7 +644,9 @@ std::vector<reg> select(graph const &interf, stack<reg> stk,
 		}
 	}
 
+#ifndef NDEBUG
 	std::cout << "select:\n" << mapping;
+#endif
 
 	return mapping;
 }
@@ -745,12 +761,12 @@ int main()
 			{ instr::load, 9, b },
 			{ instr::add , a, c, 9 },
 			{ instr::add , 8, 9, a },
-			{ instr::load, 7, b },
+			{ instr::load, 7, 9 },
 			{ instr::load, d, b },
 			{ instr::load, 4, 8 },
 			{ instr::umul, 5, 8, 4 },
 			{ instr::copy, 6, 5 },
-			{ instr::add , c, d, 6 },
+			{ instr::add , c, d, 7 },
 			{ instr::copy, b, 4 },
 			{ instr::copy, 0, 6 },
 			{ instr::copy, 1, c },
