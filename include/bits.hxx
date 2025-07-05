@@ -66,7 +66,7 @@ namespace bits {
 
 		~managed()
 		{
-			memset(ptr, 0xbe, size * sizeof *ptr);
+			assert(ptr);
 			delete[] ptr;
 		}
 

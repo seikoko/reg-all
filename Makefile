@@ -4,8 +4,8 @@ LD = g++
 
 DEBUG ?= 1
 SAN ?= 0
-COMMON_FLAGS := -I include -Wall -Wextra -Wconversion -ggdb3 -Wno-missing-field-initializers
-CXXFLAGS = $(COMMON_FLAGS) -std=c++20
+COMMON_FLAGS := -I include -Wall -Wextra -Wconversion -ggdb3 -Wno-missing-field-initializers -mpopcnt -mavx
+CXXFLAGS = $(COMMON_FLAGS) -std=c++20 -fno-exceptions
 CFLAGS = $(COMMON_FLAGS)
 LDFLAGS =
 
@@ -14,8 +14,8 @@ ifeq ($(DEBUG),1)
 	CFLAGS += -O0
 	LDFLAGS +=
 else
-	CXXFLAGS += -O3
-	CFLAGS += -O3
+	CXXFLAGS += -O2 -fomit-frame-pointer
+	CFLAGS += -O2 -fomit-frame-pointer
 	LDFLAGS +=
 	CPPFLAGS += -DNDEBUG
 endif
