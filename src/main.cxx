@@ -399,6 +399,13 @@ graph gen_graph(code_t const &code)
 	std::cout << "iter #" << _iter++ << ":\n";
 #endif
 
+	// render physical registers
+	assert(code.phys_regs <= sizeof(bits::Unit)*CHAR_BIT);
+	for (reg s = 0; s < code.phys_regs; ++s) {
+		bits::Unit mask{ (bits::Unit{1}<<code.phys_regs)-1 & ~(bits::Unit{1}<<s) };
+		bits::lazy(&mask).eval(sizeof(bits::Unit)*CHAR_BIT, g.nonmove_.slice(g.idx(s, 0)));
+	}
+
 	size_t i = code.size() - 1;
 	do {
 		const auto ins = code[i];
@@ -458,13 +465,6 @@ graph gen_graph(code_t const &code)
 		}
 #endif
 	} while (i--);
-
-	// render physical registers
-	for (reg t = 1; t < code.phys_regs; ++t) {
-		for (reg s = 0; s < t; ++s) {
-			g.nonmove(s, t);
-		}
-	}
 
 #ifndef NDEBUG
 	for (size_t i = 0; i < code.size(); ++i) {
