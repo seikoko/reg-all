@@ -381,16 +381,7 @@ graph gen_graph(code_t const &code)
 	const auto idx = [&] (reg r, size_t index) { return r * max_index + index; };
 	const auto use = [&] (reg r, size_t index) { live.set  (idx(r, index)); };
 	const auto def = [&] (reg r, size_t index) { live.clear(idx(r, index)); };
-	const auto clobber = [&] (reg r, size_t index)
-	{
-		// smear until next write
-		for (size_t i = index+1;; ++i) {
-			const auto written = live[idx(r, i)];
-			if (written | (i == code.regs()))
-				break;
-			live.set(idx(r, i));
-		}
-	};
+	const auto clobber = [&] (reg r, size_t index) { live.set(idx(r, index+1)); };
 
 #ifndef NDEBUG
 	static int _iter = 0;
