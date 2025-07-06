@@ -376,6 +376,13 @@ graph gen_graph(code_t const &code)
 	const auto regs = code.regs();
 	graph g(regs);
 	bits::managed live(regs);
+#ifndef NDEBUG
+	std::vector<bits::managed> live_mem;
+	live_mem.reserve(code.size());
+	for (size_t i = 0; i < code.size(); ++i) {
+		live_mem.emplace_back(regs);
+	}
+#endif
 	const auto use = [&] (reg r) { live.set  (r); };
 	const auto def = [&] (reg r) { live.clear(r); };
 	const auto clobber = [&] (reg r)
@@ -433,19 +440,23 @@ graph gen_graph(code_t const &code)
 			break;
 		}
 
-		// TODO: inner loop can probably be optimized
-		// as g[s, ..] |= live
-		// and shouldn't need the equivalent g[.., s] = ?
-		// since s=0,1,...regs
+		// TODO: optimize outer loop with bitset iteration
 		for (reg s = 0; s < regs; ++s) {
 			if (live[s]) {
-				for (reg t = s+1; t < regs; ++t) {
-					if (live[t]) {
-						g.nonmove(s, t);
-					}
-				}
+				auto conflict = g.nonmove_.lazy(g.idx(s, 0)) | live.lazy();
+				conflict.eval(regs, g.nonmove_.slice(g.idx(s, 0)));
+				// avoid self interference, which can make
+				// nodes be considered as nonmove node
+				// when their only interference is with
+				// themselves
+				g.nonmove_.clear(g.idx(s, s));
 			}
 		}
+#ifndef NDEBUG
+		for (reg r = 0; r < regs; ++r) {
+			live_mem[i].assign(r, live[r]);
+		}
+#endif
 	} while (i--);
 
 	// render physical registers
@@ -456,6 +467,9 @@ graph gen_graph(code_t const &code)
 	}
 
 #ifndef NDEBUG
+	for (size_t i = 0; i < code.size(); ++i) {
+		std::cout << i << ": " << live_mem[i] << code[i];
+	}
 	std::cout << "graph:\n" << g << std::endl;
 #endif
 
