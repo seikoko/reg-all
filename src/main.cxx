@@ -374,14 +374,18 @@ graph gen_graph(code_t const &code)
 	// copy r0, %edi; copy r1, %esi; copy r2, %edx;
 	// copy %eax, r3; copy %edx, r4;
 	const auto regs = code.regs();
-	const auto max_index = round_up(1+code.size(), bits::unit_bits);
 	graph g(regs);
-	// [definition, last use)
-	bits::managed live(regs * max_index);
-	const auto idx = [&] (reg r, size_t index) { return r * max_index + index; };
-	const auto use = [&] (reg r, size_t index) { live.set  (idx(r, index)); };
-	const auto def = [&] (reg r, size_t index) { live.clear(idx(r, index)); };
-	const auto clobber = [&] (reg r, size_t index) { live.set(idx(r, index+1)); };
+	bits::managed live(regs);
+	const auto use = [&] (reg r) { live.set  (r); };
+	const auto def = [&] (reg r) { live.clear(r); };
+	const auto clobber = [&] (reg r)
+	{
+		for (size_t other = 0; other < regs; ++other) {
+			if (live[other]) {
+				g.nonmove(r, other);
+			}
+		}
+	};
 
 #ifndef NDEBUG
 	static int _iter = 0;
@@ -390,74 +394,64 @@ graph gen_graph(code_t const &code)
 
 	size_t i = code.size() - 1;
 	do {
-		for (reg r = 0; r < regs; ++r) {
-			live.assign(idx(r, i), live[ idx(r, i+1) ]);
-		}
-
 		const auto ins = code[i];
 		switch (ins.opcode) {
 		case instr::copy:
-			def(ins.rd , i);
-			use(ins.rs1, i);
+			def(ins.rd);
+			use(ins.rs1);
 			g.move(ins.rd, ins.rs1);
 			break;
 		case instr::imm:
 		case instr::load_local:
-			def(ins.rd, i);
+			def(ins.rd);
 			break;
 		case instr::load:
-			def(ins.rd, i);
-			use(ins.rs1, i);
+			def(ins.rd);
+			use(ins.rs1);
 			break;
 		case instr::add:
 		case instr::umul:
-			def(ins.rd, i);
-			use(ins.rs1, i);
-			use(ins.rs2, i);
+			def(ins.rd);
+			use(ins.rs1);
+			use(ins.rs2);
 			break;
 		case instr::store:
-			use(ins.rd, i);
-			use(ins.rs1, i);
+			use(ins.rd);
+			use(ins.rs1);
 			break;
 		case instr::store_local:
-			use(ins.rd, i);
+			use(ins.rd);
 			break;
 		case instr::def:
-			def(ins.rd, i);
+			def(ins.rd);
 			break;
 		case instr::req:
-			use(ins.rd, i);
+			use(ins.rd);
 			break;
 		case instr::clobber:
-			clobber(ins.rd, i);
+			clobber(ins.rd);
 			break;
 		}
-	} while (i--);
 
-#ifndef NDEBUG
-	for (reg i = 0; i < code.size(); ++i) {
-		bits::managed _live(regs);
-		for (reg r = 0; r < regs; ++r) {
-			if (live[idx(r, i)])
-				_live.set(r);
+		// TODO: inner loop can probably be optimized
+		// as g[s, ..] |= live
+		// and shouldn't need the equivalent g[.., s] = ?
+		// since s=0,1,...regs
+		for (reg s = 0; s < regs; ++s) {
+			if (live[s]) {
+				for (reg t = s+1; t < regs; ++t) {
+					if (live[t]) {
+						g.nonmove(s, t);
+					}
+				}
+			}
 		}
-		std::cout << i << ": " << _live << code[i];
-	}
-#endif
+	} while (i--);
 
 	// render physical registers
 	for (reg t = 1; t < code.phys_regs; ++t) {
 		for (reg s = 0; s < t; ++s) {
 			g.nonmove(s, t);
-		}
-	}
-	// render virtual registers' interference
-	for (reg t = 0; t < regs; ++t) {
-		for (reg s = 0; s < t; ++s) {
-			const auto overlap = live.lazy(idx(s, 0)) & live.lazy(idx(t, 0));
-			if (bits::reduce_or(overlap).eval(max_index)) {
-				g.nonmove(s, t);
-			}
 		}
 	}
 
@@ -786,17 +780,17 @@ int main()
 			{ instr::umul, 5, 8, 4 },
 			{ instr::copy, 6, 5 },
 			{ instr::add , c, d, 7 },
-			{ instr::copy, b, 4 },
+			{ instr::copy, f, 4 },
 			{ instr::copy, 0, 6 },
 			{ instr::copy, 1, c },
-			{ instr::copy, 2, b },
+			{ instr::copy, 2, f },
 			{ instr::req , 0 },
 			{ instr::req , 1 },
 			{ instr::copy, 3, e },
 			{ instr::req , 3 },
 		},
 		4,
-		11,
+		12,
 	};
 #endif
 #if 0
