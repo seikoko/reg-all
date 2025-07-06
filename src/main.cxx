@@ -460,9 +460,7 @@ graph gen_graph(code_t const &code)
 			}
 		}
 #ifndef NDEBUG
-		for (reg r = 0; r < regs; ++r) {
-			live_mem[i].assign(r, live[r]);
-		}
+		live.lazy().eval(regs, live_mem[i].slice(0));
 #endif
 	} while (i--);
 
